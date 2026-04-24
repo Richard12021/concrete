@@ -1,73 +1,88 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-// ─── Concrete network config ──────────────────────────────────────────────────
-// Concrete operates on Ethereum, Arbitrum, Berachain, Katana, Corn, Morph
-// We query USDC/USDT/DAI balances on Ethereum mainnet + Arbitrum as primary chains
-const NETWORKS = {
-  1:        { name: "Ethereum",  rpc: "https://eth.llamarpc.com",                  explorer: "https://etherscan.io" },
-  42161:    { name: "Arbitrum",  rpc: "https://arb1.arbitrum.io/rpc",              explorer: "https://arbiscan.io" },
-  80084:    { name: "Berachain", rpc: "https://bartio.rpc.berachain.com",          explorer: "https://bartio.berachain.com" },
+// ─── Sepolia Network Config ───────────────────────────────────────────────────
+const SEPOLIA = {
+  chainId: 11155111,
+  chainIdHex: "0xaa36a7",
+  name: "Sepolia Testnet",
+  rpc: "https://rpc.sepolia.org",
+  rpcFallback: "https://ethereum-sepolia-rpc.publicnode.com",
+  explorer: "https://sepolia.etherscan.io",
+  nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 },
 };
 
-// USDC contract addresses per chain (ERC-20 balanceOf)
-const TOKEN_CONTRACTS = {
-  USDC: {
-    1:     "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    42161: "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8",
-  },
-  USDT: {
-    1:     "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-    42161: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
-  },
-  DAI: {
-    1:     "0x6B175474E89094C44Da98b954EedeAC495271d0F",
-    42161: "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1",
-  },
+// Sepolia testnet ERC-20 token addresses (well-known test tokens)
+const SEPOLIA_TOKENS = {
+  USDC: { address: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", decimals: 6,  symbol: "USDC" },
+  USDT: { address: "0x7169D38820dfd117C3FA1f22a697dBA58d90BA06", decimals: 6,  symbol: "USDT" },
+  DAI:  { address: "0x68194a729C2450ad26072b3D33ADaCbcef39D574", decimals: 18, symbol: "DAI"  },
 };
 
-// ERC-20 balanceOf ABI selector: balanceOf(address) => 0x70a08231
-const ERC20_BALANCE_OF = "0x70a08231";
-const ERC20_DECIMALS   = "0x313ce567";
-
-async function readContract(rpc, contract, selector, param) {
-  const data = selector + param.replace("0x","").padStart(64,"0");
-  const res = await fetch(rpc, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0", id: 1, method: "eth_call",
-      params: [{ to: contract, data }, "latest"],
-    }),
-  });
-  const json = await res.json();
-  return json.result;
+// ─── RPC helpers ──────────────────────────────────────────────────────────────
+async function rpcCall(method, params = []) {
+  for (const rpc of [SEPOLIA.rpc, SEPOLIA.rpcFallback]) {
+    try {
+      const r = await fetch(rpc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      const j = await r.json();
+      if (j.result !== undefined) return j.result;
+    } catch { continue; }
+  }
+  return null;
 }
 
-async function getTokenBalance(rpc, tokenAddress, walletAddress) {
+async function getSepoliaETH(address) {
   try {
-    const [balHex, decHex] = await Promise.all([
-      readContract(rpc, tokenAddress, ERC20_BALANCE_OF, walletAddress),
-      readContract(rpc, tokenAddress, ERC20_DECIMALS, walletAddress),
-    ]);
-    const decimals = parseInt(decHex, 16) || 6;
-    const raw = BigInt(balHex);
-    return Number(raw) / Math.pow(10, decimals);
+    const hex = await rpcCall("eth_getBalance", [address, "latest"]);
+    return hex ? Number(BigInt(hex)) / 1e18 : 0;
   } catch { return 0; }
 }
 
-async function getNativeBalance(rpc, address) {
+async function getTokenBalance(address, tokenAddress, decimals) {
   try {
-    const res = await fetch(rpc, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0", id: 1, method: "eth_getBalance",
-        params: [address, "latest"],
-      }),
-    });
-    const json = await res.json();
-    return Number(BigInt(json.result)) / 1e18;
+    const data = "0x70a08231" + address.replace("0x","").padStart(64,"0");
+    const hex = await rpcCall("eth_call", [{ to: tokenAddress, data }, "latest"]);
+    if (!hex || hex === "0x") return 0;
+    return Number(BigInt(hex)) / Math.pow(10, decimals);
   } catch { return 0; }
+}
+
+async function fetchSepoliaBalances(address) {
+  const [eth, usdc, usdt, dai] = await Promise.all([
+    getSepoliaETH(address),
+    getTokenBalance(address, SEPOLIA_TOKENS.USDC.address, SEPOLIA_TOKENS.USDC.decimals),
+    getTokenBalance(address, SEPOLIA_TOKENS.USDT.address, SEPOLIA_TOKENS.USDT.decimals),
+    getTokenBalance(address, SEPOLIA_TOKENS.DAI.address,  SEPOLIA_TOKENS.DAI.decimals),
+  ]);
+  return { eth, USDC: usdc, USDT: usdt, DAI: dai };
+}
+
+async function switchToSepolia(provider) {
+  try {
+    await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: SEPOLIA.chainIdHex }] });
+    return true;
+  } catch (err) {
+    if (err.code === 4902 || err.code === -32603) {
+      // Chain not added — add it
+      try {
+        await provider.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: SEPOLIA.chainIdHex,
+            chainName: "Sepolia Testnet",
+            nativeCurrency: SEPOLIA.nativeCurrency,
+            rpcUrls: [SEPOLIA.rpc, SEPOLIA.rpcFallback],
+            blockExplorerUrls: [SEPOLIA.explorer],
+          }],
+        });
+        return true;
+      } catch { return false; }
+    }
+    return false;
+  }
 }
 
 async function getChainId(provider) {
@@ -75,49 +90,33 @@ async function getChainId(provider) {
   return parseInt(hex, 16);
 }
 
-async function fetchAllBalances(address, chainId) {
-  const net = NETWORKS[chainId];
-  if (!net) return { native: 0, USDC: 0, USDT: 0, DAI: 0, chainId, networkName: `Chain ${chainId}` };
-
-  const [native, USDC, USDT, DAI] = await Promise.all([
-    getNativeBalance(net.rpc, address),
-    TOKEN_CONTRACTS.USDC[chainId] ? getTokenBalance(net.rpc, TOKEN_CONTRACTS.USDC[chainId], address) : Promise.resolve(0),
-    TOKEN_CONTRACTS.USDT[chainId] ? getTokenBalance(net.rpc, TOKEN_CONTRACTS.USDT[chainId], address) : Promise.resolve(0),
-    TOKEN_CONTRACTS.DAI[chainId]  ? getTokenBalance(net.rpc, TOKEN_CONTRACTS.DAI[chainId],  address) : Promise.resolve(0),
-  ]);
-
-  return { native, USDC, USDT, DAI, chainId, networkName: net.name };
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-const fmt  = (n, d = 2) => Number(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
-const fmtUSD  = (n) => `$${fmt(n)}`;
-const fmtPct  = (n) => `${fmt(n, 1)}%`;
-const short   = (addr) => addr ? `${addr.slice(0,6)}…${addr.slice(-4)}` : "";
+const fmt    = (n, d = 2) => Number(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtUSD = (n) => `$${fmt(n)}`;
+const fmtETH = (n) => `${fmt(n, 4)} ETH`;
+const fmtPct = (n) => `${fmt(n, 1)}%`;
+const short  = (a) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "";
 
-// ─── Mock yield data ──────────────────────────────────────────────────────────
+// ─── Yield data ───────────────────────────────────────────────────────────────
 const VAULTS = [
   { id:"7d",   label:"7-Day",   days:7,   color:"#F5E882", dimColor:"#5a4f00", apy:5.2,  alloc:20 },
   { id:"30d",  label:"30-Day",  days:30,  color:"#EAB308", dimColor:"#713f12", apy:6.8,  alloc:25 },
   { id:"90d",  label:"90-Day",  days:90,  color:"#F97316", dimColor:"#7c2d12", apy:8.4,  alloc:25 },
   { id:"180d", label:"180-Day", days:180, color:"#FB923C", dimColor:"#431407", apy:10.1, alloc:30 },
 ];
-
 const PROFILES = {
   conservative: { name:"Conservative", icon:"🛡️", allocs:[40,30,20,10] },
   balanced:     { name:"Balanced",     icon:"⚖️", allocs:[20,25,25,30] },
   aggressive:   { name:"Aggressive",   icon:"🚀", allocs:[10,15,30,45] },
 };
-
 const PAYOUT_MODES = [
-  { id:"compound", label:"Compound",       icon:"🔄", desc:"Reinvest all yield automatically" },
-  { id:"monthly",  label:"Monthly Income", icon:"💸", desc:"Withdraw yield to wallet monthly"  },
-  { id:"hybrid",   label:"Hybrid",         icon:"✂️", desc:"50% reinvested, 50% paid out"     },
+  { id:"compound", label:"Compound",       icon:"🔄", desc:"Reinvest all yield automatically"  },
+  { id:"monthly",  label:"Monthly Income", icon:"💸", desc:"Withdraw yield to wallet monthly"   },
+  { id:"hybrid",   label:"Hybrid",         icon:"✂️", desc:"50% reinvested, 50% paid out"      },
 ];
-
 const blendedAPY = (allocs) => VAULTS.reduce((s,v,i) => s + v.apy * allocs[i] / 100, 0);
 
-// ─── Concrete Logo SVG ────────────────────────────────────────────────────────
+// ─── Logo ─────────────────────────────────────────────────────────────────────
 function Logo({ size = 30 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
@@ -145,86 +144,199 @@ function UTCClock() {
   );
 }
 
+// ─── Network Banner (shown when wrong chain) ──────────────────────────────────
+function NetworkBanner({ provider, onSwitched }) {
+  const [switching, setSwitching] = useState(false);
+  const doSwitch = async () => {
+    setSwitching(true);
+    const ok = await switchToSepolia(provider);
+    setSwitching(false);
+    if (ok) onSwitched();
+  };
+  return (
+    <div style={{
+      background:"#1a1008",borderBottom:"1px solid #F97316",
+      padding:"10px 28px",display:"flex",alignItems:"center",justifyContent:"space-between",
+      gap:16,
+    }}>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <span style={{fontSize:16}}>⚠️</span>
+        <div>
+          <span style={{fontSize:13,color:"#F97316",fontWeight:700}}>Wrong Network Detected</span>
+          <span style={{fontSize:12,color:"#a0926a",marginLeft:10}}>
+            LadderFi runs on <strong style={{color:"#F5E882"}}>Sepolia Testnet</strong>. Please switch to continue.
+          </span>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
+        <a href={SEPOLIA.explorer} target="_blank" rel="noopener noreferrer" style={{
+          fontSize:11,color:"#a0926a",textDecoration:"none",
+          fontFamily:"'IBM Plex Mono',monospace",letterSpacing:1,
+          borderBottom:"1px solid #3a2e0a",
+        }}>Sepolia Explorer ↗</a>
+        <button onClick={doSwitch} disabled={switching} style={{
+          background:"#F97316",color:"#0a0900",border:"none",borderRadius:7,
+          padding:"8px 16px",fontFamily:"'Syne',sans-serif",fontWeight:800,
+          fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",gap:6,
+        }}>
+          {switching
+            ? <><Spinner color="#0a0900"/> Switching…</>
+            : "Switch to Sepolia →"
+          }
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Add Sepolia Helper Panel ─────────────────────────────────────────────────
+function SepoliaGuidePanel({ onClose }) {
+  return (
+    <div style={{
+      position:"fixed",inset:0,zIndex:1001,background:"rgba(5,4,2,0.9)",
+      backdropFilter:"blur(10px)",display:"flex",alignItems:"center",justifyContent:"center",
+    }}>
+      <div style={{
+        background:"#100f0a",border:"1px solid #3a2e0a",borderRadius:20,
+        width:500,maxWidth:"95vw",padding:32,position:"relative",
+        boxShadow:"0 0 60px #F5E88218",
+      }}>
+        <button onClick={onClose} style={{position:"absolute",top:16,right:16,background:"none",border:"none",color:"#5a4a20",fontSize:20,cursor:"pointer"}}>✕</button>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:24}}>
+          <Logo size={30}/>
+          <div>
+            <div style={{fontFamily:"'DM Serif Display',serif",fontSize:19,color:"#F5E882"}}>Add Sepolia Testnet</div>
+            <div style={{fontSize:11,color:"#5a4a20",fontFamily:"'IBM Plex Mono',monospace"}}>Powered by Ethereum</div>
+          </div>
+        </div>
+
+        <div style={{background:"#1a1608",border:"1px solid #2a2008",borderRadius:12,padding:16,marginBottom:20}}>
+          <div style={{fontSize:11,color:"#3a2e0a",letterSpacing:2,textTransform:"uppercase",fontFamily:"'IBM Plex Mono',monospace",marginBottom:12}}>Network Details</div>
+          {[
+            ["Network Name",    "Sepolia Testnet"],
+            ["Chain ID",        "11155111 (0xaa36a7)"],
+            ["RPC URL",         "https://rpc.sepolia.org"],
+            ["Currency Symbol", "ETH"],
+            ["Block Explorer",  "sepolia.etherscan.io"],
+          ].map(([k,v]) => (
+            <div key={k} style={{display:"flex",justifyContent:"space-between",marginBottom:8,gap:12}}>
+              <span style={{fontSize:11,color:"#5a4a20",fontFamily:"'IBM Plex Mono',monospace"}}>{k}</span>
+              <span style={{fontSize:11,color:"#F5E882",fontFamily:"'IBM Plex Mono',monospace",wordBreak:"break-all",textAlign:"right"}}>{v}</span>
+            </div>
+          ))}
+        </div>
+
+        <div style={{marginBottom:20}}>
+          <div style={{fontSize:12,color:"#a0926a",marginBottom:12,fontWeight:700}}>Steps to Add Manually:</div>
+          {[
+            "Open MetaMask or OKX Wallet",
+            "Go to Settings → Networks → Add Network",
+            "Enter the network details shown above",
+            'Click "Save" — Sepolia is now available',
+            "Get free test ETH from a Sepolia faucet",
+          ].map((s,i) => (
+            <div key={i} style={{display:"flex",gap:10,marginBottom:8,alignItems:"flex-start"}}>
+              <span style={{
+                minWidth:22,height:22,background:"#1e1a08",border:"1px solid #F5E882",
+                borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
+                fontSize:10,color:"#F5E882",fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",
+              }}>{i+1}</span>
+              <span style={{fontSize:13,color:"#a0926a",paddingTop:2}}>{s}</span>
+            </div>
+          ))}
+        </div>
+
+        <div style={{display:"flex",gap:10}}>
+          <a href={SEPOLIA.explorer} target="_blank" rel="noopener noreferrer" style={{
+            flex:1,padding:"12px",background:"#1a1608",border:"1px solid #3a2e0a",
+            borderRadius:10,color:"#F5E882",fontFamily:"'Syne',sans-serif",fontWeight:700,
+            fontSize:13,textDecoration:"none",textAlign:"center",transition:"all 0.2s",
+          }}
+          onMouseEnter={e=>e.currentTarget.style.borderColor="#F5E882"}
+          onMouseLeave={e=>e.currentTarget.style.borderColor="#3a2e0a"}
+          >Open Sepolia Explorer ↗</a>
+          <a href="https://sepoliafaucet.com" target="_blank" rel="noopener noreferrer" style={{
+            flex:1,padding:"12px",background:"#F5E882",border:"none",
+            borderRadius:10,color:"#0a0900",fontFamily:"'Syne',sans-serif",fontWeight:800,
+            fontSize:13,textDecoration:"none",textAlign:"center",
+          }}>Get Sepolia ETH 🚰</a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Wallet Connect Modal ─────────────────────────────────────────────────────
 function WalletModal({ onConnect, onClose }) {
-  const [connecting, setConnecting] = useState(null); // "metamask" | "okx"
-  const [error, setError] = useState("");
+  const [connecting, setConnecting] = useState(null);
+  const [status,     setStatus]     = useState("");
+  const [error,      setError]      = useState("");
+  const [showGuide,  setShowGuide]  = useState(false);
 
   const WALLETS = [
     {
-      id: "metamask",
-      name: "MetaMask",
-      color: "#F6851B",
-      storeUrl: "https://chromewebstore.google.com/detail/metamask/nkbihfbeogaeaoehlefnkodbefgpgknn",
+      id:"metamask", name:"MetaMask", storeUrl:"https://chromewebstore.google.com/detail/metamask/nkbihfbeogaeaoehlefnkodbefgpgknn",
       icon: (
         <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
           <rect width="40" height="40" rx="10" fill="#1a1008"/>
-          <path d="M33 7L22.5 14.7L24.5 9.5L33 7Z" fill="#E2761B" stroke="#E2761B" strokeWidth="0.3"/>
-          <path d="M7 7L17.4 14.8L15.5 9.5L7 7Z" fill="#E4761B" stroke="#E4761B" strokeWidth="0.3"/>
-          <path d="M29.2 26.5L26.3 31L32.3 32.7L34.1 26.6L29.2 26.5Z" fill="#E4761B" stroke="#E4761B" strokeWidth="0.3"/>
-          <path d="M5.9 26.6L7.7 32.7L13.7 31L10.8 26.5L5.9 26.6Z" fill="#E4761B" stroke="#E4761B" strokeWidth="0.3"/>
-          <path d="M13.4 18.3L11.6 21L17.6 21.3L17.4 14.8L13.4 18.3Z" fill="#E4761B" stroke="#E4761B" strokeWidth="0.3"/>
-          <path d="M26.6 18.3L22.5 14.7L22.4 21.3L28.4 21L26.6 18.3Z" fill="#E4761B" stroke="#E4761B" strokeWidth="0.3"/>
-          <path d="M13.7 31L17.3 29.2L14.2 26.6L13.7 31Z" fill="#E4761B" stroke="#E4761B" strokeWidth="0.3"/>
-          <path d="M22.7 29.2L26.3 31L25.8 26.6L22.7 29.2Z" fill="#E4761B" stroke="#E4761B" strokeWidth="0.3"/>
-          <path d="M26.3 31L22.7 29.2L23 31.8V32.8L26.3 31Z" fill="#D7C1B3" stroke="#D7C1B3" strokeWidth="0.3"/>
-          <path d="M13.7 31L17 32.8V31.8L17.3 29.2L13.7 31Z" fill="#D7C1B3" stroke="#D7C1B3" strokeWidth="0.3"/>
-          <path d="M17.1 24.5L14 23.5L16.1 22.5L17.1 24.5Z" fill="#233447" stroke="#233447" strokeWidth="0.3"/>
-          <path d="M22.9 24.5L23.9 22.5L26 23.5L22.9 24.5Z" fill="#233447" stroke="#233447" strokeWidth="0.3"/>
-          <path d="M13.7 31L14.2 26.5L10.8 26.6L13.7 31Z" fill="#CD6116" stroke="#CD6116" strokeWidth="0.3"/>
-          <path d="M25.8 26.5L26.3 31L29.2 26.6L25.8 26.5Z" fill="#CD6116" stroke="#CD6116" strokeWidth="0.3"/>
-          <path d="M28.4 21L22.4 21.3L22.9 24.5L23.9 22.5L26 23.5L28.4 21Z" fill="#CD6116" stroke="#CD6116" strokeWidth="0.3"/>
-          <path d="M14 23.5L16.1 22.5L17.1 24.5L17.6 21.3L11.6 21L14 23.5Z" fill="#CD6116" stroke="#CD6116" strokeWidth="0.3"/>
-          <path d="M11.6 21L14.2 26.5L14 23.5L11.6 21Z" fill="#E4751F" stroke="#E4751F" strokeWidth="0.3"/>
-          <path d="M26 23.5L25.8 26.5L28.4 21L26 23.5Z" fill="#E4751F" stroke="#E4751F" strokeWidth="0.3"/>
-          <path d="M22.4 21.3L21.7 24.5L22.6 29.7L22.8 23L22.4 21.3Z" fill="#E4751F" stroke="#E4751F" strokeWidth="0.3"/>
-          <path d="M17.6 21.3L17.2 23L17.4 29.7L18.3 24.5L17.6 21.3Z" fill="#E4751F" stroke="#E4751F" strokeWidth="0.3"/>
-          <path d="M22.9 24.5L22.4 21.3L18.3 24.5L17.4 29.7L20 31.2L22.6 29.7L22.9 24.5Z" fill="#F6851B" stroke="#F6851B" strokeWidth="0.3"/>
-          <path d="M14 23.5L14.2 26.5L17.4 29.7L18.3 24.5L17.1 24.5L14 23.5Z" fill="#F6851B" stroke="#F6851B" strokeWidth="0.3"/>
-          <path d="M22.6 29.7L20 31.2L18.3 24.5L22.9 24.5L22.6 29.7Z" fill="#F6851B" stroke="#F6851B" strokeWidth="0.3"/>
-          <path d="M17 32.8L17.3 29.2L14.2 26.6L13.7 31L17 32.8Z" fill="#C0AD9E" stroke="#C0AD9E" strokeWidth="0.3"/>
-          <path d="M25.8 26.6L22.7 29.2L23 32.8L26.3 31L25.8 26.6Z" fill="#C0AD9E" stroke="#C0AD9E" strokeWidth="0.3"/>
-          <path d="M20 31.2L17.4 29.7L17 31.8V32.8L20 31.2Z" fill="#161616" stroke="#161616" strokeWidth="0.3"/>
-          <path d="M22.6 29.7L20 31.2L23 32.8V31.8L22.6 29.7Z" fill="#161616" stroke="#161616" strokeWidth="0.3"/>
+          <path d="M33 7L22.5 14.7 24.5 9.5 33 7z" fill="#E2761B" stroke="#E2761B" strokeWidth=".3"/>
+          <path d="M7 7l10.4 7.8-1.9-5.3L7 7z" fill="#E4761B" stroke="#E4761B" strokeWidth=".3"/>
+          <path d="M29.2 26.5l-2.9 4.5 6 1.7 1.8-6.1-4.9-.1z" fill="#E4761B" stroke="#E4761B" strokeWidth=".3"/>
+          <path d="M5.9 26.6l1.8 6.1 6-1.7-2.9-4.5-4.9.1z" fill="#E4761B" stroke="#E4761B" strokeWidth=".3"/>
+          <path d="M13.4 18.3l-1.8 2.7 6 .3-.2-6.5-4 3.5z" fill="#E4761B" stroke="#E4761B" strokeWidth=".3"/>
+          <path d="M26.6 18.3l-4.1-3.6-.2 6.6 6-.3-1.7-2.7z" fill="#E4761B" stroke="#E4761B" strokeWidth=".3"/>
+          <path d="M13.7 31l3.6-1.8-3.1-2.6-.5 4.4z" fill="#E4761B" stroke="#E4761B" strokeWidth=".3"/>
+          <path d="M22.7 29.2l3.6 1.8-.5-4.4-3.1 2.6z" fill="#E4761B" stroke="#E4761B" strokeWidth=".3"/>
+          <path d="M26.3 31l-3.6-1.8.3 2.6v1l3.3-1.8z" fill="#D7C1B3" stroke="#D7C1B3" strokeWidth=".3"/>
+          <path d="M13.7 31l3.3 1.8v-1l.3-2.6L13.7 31z" fill="#D7C1B3" stroke="#D7C1B3" strokeWidth=".3"/>
+          <path d="M17.1 24.5l-3.1-1 2.1-1 1 2z" fill="#233447" stroke="#233447" strokeWidth=".3"/>
+          <path d="M22.9 24.5l1-2 2.1 1-3.1 1z" fill="#233447" stroke="#233447" strokeWidth=".3"/>
+          <path d="M13.7 31l.5-4.5-4.9.1L13.7 31z" fill="#CD6116" stroke="#CD6116" strokeWidth=".3"/>
+          <path d="M25.8 26.5l.5 4.5 4.4-4.4-4.9-.1z" fill="#CD6116" stroke="#CD6116" strokeWidth=".3"/>
+          <path d="M28.4 21l-6 .3.6 3.2 1-2 2.1 1 2.3-2.5z" fill="#CD6116" stroke="#CD6116" strokeWidth=".3"/>
+          <path d="M14 23.5l2.1-1 1 2 .6-3.2-6-.3 2.3 2.5z" fill="#CD6116" stroke="#CD6116" strokeWidth=".3"/>
+          <path d="M11.6 21l3.1 5.5-.5-2.5L11.6 21z" fill="#E4751F" stroke="#E4751F" strokeWidth=".3"/>
+          <path d="M25.8 26.5l-.5 2.5L28.4 21l-2.6 5.5z" fill="#E4751F" stroke="#E4751F" strokeWidth=".3"/>
+          <path d="M22.4 21.3l-.7 3.2.9 5.2.2-6.8-.4-1.6z" fill="#E4751F" stroke="#E4751F" strokeWidth=".3"/>
+          <path d="M17.6 21.3l-.4 1.6.2 6.8.9-5.2-.7-3.2z" fill="#E4751F" stroke="#E4751F" strokeWidth=".3"/>
+          <path d="M22.9 24.5l-.9-3.2-1.9 5.5-.5.4 2 1.2 2.4-1.4-.4-1.4-.7-1.1z" fill="#F6851B" stroke="#F6851B" strokeWidth=".3"/>
+          <path d="M14 23.5l.2 2.5 2.4 1.4 2-1.2-.5-.4-1.9-5.5-.9 3.2-.7 1.1-.3.9z" fill="#F6851B" stroke="#F6851B" strokeWidth=".3"/>
+          <path d="M17 32.8v-1l-.3-.2h-3l-.3.2.3 2.8 3.3-1.8z" fill="#C0AD9E" stroke="#C0AD9E" strokeWidth=".3"/>
+          <path d="M26.3 31h-3l-.3.2v1l3.3 1.8.3-2.8-.3-.2z" fill="#C0AD9E" stroke="#C0AD9E" strokeWidth=".3"/>
+          <path d="M20 31.2l-2-1.2.2 1.6v.8h3.6v-.8l.2-1.6-2 1.2z" fill="#161616" stroke="#161616" strokeWidth=".3"/>
         </svg>
       ),
     },
     {
-      id: "okx",
-      name: "OKX Wallet",
-      color: "#FFFFFF",
-      storeUrl: "https://chromewebstore.google.com/detail/okx-wallet/mcohilncbfahbmgdjkbpemcciiolgcge",
+      id:"okx", name:"OKX Wallet", storeUrl:"https://chromewebstore.google.com/detail/okx-wallet/mcohilncbfahbmgdjkbpemcciiolgcge",
       icon: (
         <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
           <rect width="40" height="40" rx="10" fill="#000"/>
-          <rect x="9"  y="9"  width="9" height="9" rx="1.5" fill="white"/>
-          <rect x="22" y="9"  width="9" height="9" rx="1.5" fill="white"/>
+          <rect x="9"    y="9"    width="9" height="9" rx="1.5" fill="white"/>
+          <rect x="22"   y="9"    width="9" height="9" rx="1.5" fill="white"/>
           <rect x="15.5" y="15.5" width="9" height="9" rx="1.5" fill="white"/>
-          <rect x="9"  y="22" width="9" height="9" rx="1.5" fill="white"/>
-          <rect x="22" y="22" width="9" height="9" rx="1.5" fill="white"/>
+          <rect x="9"    y="22"   width="9" height="9" rx="1.5" fill="white"/>
+          <rect x="22"   y="22"   width="9" height="9" rx="1.5" fill="white"/>
         </svg>
       ),
     },
   ];
 
   const detectProvider = (id) => {
+    if (typeof window === "undefined") return null;
     if (id === "metamask") {
-      // MetaMask injects window.ethereum; if multiple wallets exist it may be in ethereum.providers[]
-      if (typeof window === "undefined") return null;
-      if (window.ethereum?.isMetaMask && !window.ethereum?.isOKExWallet && !window.ethereum?.isOKXWallet) {
-        return window.ethereum;
-      }
-      // multi-wallet: find MetaMask in providers array
+      // Check providers array first (multi-wallet environment)
       const providers = window.ethereum?.providers ?? [];
       const mm = providers.find(p => p.isMetaMask && !p.isOKExWallet && !p.isOKXWallet);
       if (mm) return mm;
-      // fallback: ethereum is MetaMask
-      if (window.ethereum?.isMetaMask) return window.ethereum;
+      // Single wallet: must be MetaMask and NOT OKX
+      if (window.ethereum?.isMetaMask && !window.ethereum?.isOKExWallet && !window.ethereum?.isOKXWallet) {
+        return window.ethereum;
+      }
       return null;
     }
     if (id === "okx") {
-      if (typeof window === "undefined") return null;
-      // OKX injects window.okxwallet (primary) or window.ethereum with isOKExWallet flag
+      // OKX's dedicated global injection takes priority
       if (window.okxwallet) return window.okxwallet;
       const providers = window.ethereum?.providers ?? [];
       const okx = providers.find(p => p.isOKExWallet || p.isOKXWallet);
@@ -236,117 +348,152 @@ function WalletModal({ onConnect, onClose }) {
   };
 
   const connect = async (wallet) => {
-    setError("");
+    setError(""); setStatus("");
     setConnecting(wallet.id);
 
     const provider = detectProvider(wallet.id);
-
     if (!provider) {
       setConnecting(null);
-      // Not installed — redirect to Chrome Web Store
       window.open(wallet.storeUrl, "_blank");
-      setError(`${wallet.name} extension not detected. Opening install page…`);
+      setError(`${wallet.name} not detected. Install link opened in new tab.`);
       return;
     }
 
     try {
-      // Request accounts — this triggers the wallet's native popup
+      setStatus("Requesting accounts from wallet…");
       const accounts = await provider.request({ method: "eth_requestAccounts" });
       const address = accounts[0];
-      if (!address) throw new Error("No account returned");
+      if (!address) throw new Error("No account returned.");
 
-      // Get chain
+      // Check + switch to Sepolia
       const chainId = await getChainId(provider);
+      if (chainId !== SEPOLIA.chainId) {
+        setStatus("Switching to Sepolia Testnet…");
+        const switched = await switchToSepolia(provider);
+        if (!switched) throw new Error("Could not switch to Sepolia. Please switch manually.");
+      }
 
-      // Fetch real balances from chain
-      const balances = await fetchAllBalances(address, chainId);
+      setStatus("Fetching on-chain balances…");
+      const balances = await fetchSepoliaBalances(address);
 
-      onConnect({ wallet, address, provider, balances, chainId });
+      setConnecting(null);
+      onConnect({ wallet, address, provider, balances });
     } catch (err) {
       setConnecting(null);
-      if (err.code === 4001) {
-        setError("Connection rejected by user.");
-      } else {
-        setError(err.message || "Connection failed.");
-      }
+      if (err.code === 4001) setError("Connection rejected — you cancelled the request.");
+      else setError(err.message || "Connection failed. Please try again.");
     }
   };
 
   return (
-    <div style={{
-      position:"fixed",inset:0,zIndex:1000,
-      background:"rgba(5,4,2,0.9)",backdropFilter:"blur(10px)",
-      display:"flex",alignItems:"center",justifyContent:"center",
-    }}>
+    <>
+      {showGuide && <SepoliaGuidePanel onClose={() => setShowGuide(false)}/>}
       <div style={{
-        background:"#100f0a",border:"1px solid #3a2e0a",borderRadius:20,
-        width:430,maxWidth:"95vw",padding:32,position:"relative",
-        boxShadow:"0 0 60px #F5E88218",
+        position:"fixed",inset:0,zIndex:1000,background:"rgba(5,4,2,0.88)",
+        backdropFilter:"blur(10px)",display:"flex",alignItems:"center",justifyContent:"center",
       }}>
-        <button onClick={onClose} style={{
-          position:"absolute",top:16,right:16,background:"none",border:"none",
-          color:"#5a4a20",fontSize:20,cursor:"pointer",lineHeight:1,padding:4,
-        }}>✕</button>
+        <div style={{
+          background:"#100f0a",border:"1px solid #3a2e0a",borderRadius:20,
+          width:440,maxWidth:"95vw",padding:32,position:"relative",
+          boxShadow:"0 0 60px #F5E88218",
+        }}>
+          <button onClick={onClose} style={{position:"absolute",top:16,right:16,background:"none",border:"none",color:"#5a4a20",fontSize:20,cursor:"pointer"}}>✕</button>
 
-        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:28}}>
-          <Logo size={32}/>
-          <div>
-            <div style={{fontFamily:"'DM Serif Display',serif",fontSize:19,color:"#F5E882"}}>Connect Wallet</div>
-            <div style={{fontSize:11,color:"#5a4a20",marginTop:1,fontFamily:"'IBM Plex Mono',monospace"}}>Select your wallet provider</div>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:6}}>
+            <Logo size={32}/>
+            <div>
+              <div style={{fontFamily:"'DM Serif Display',serif",fontSize:19,color:"#F5E882"}}>Connect Wallet</div>
+              <div style={{fontSize:11,color:"#5a4a20",fontFamily:"'IBM Plex Mono',monospace",marginTop:1}}>Sepolia Testnet · ETH</div>
+            </div>
           </div>
-        </div>
 
-        <div style={{display:"flex",flexDirection:"column",gap:10}}>
-          {WALLETS.map(w => {
-            const isConnecting = connecting === w.id;
-            return (
-              <button key={w.id} onClick={() => connect(w)} disabled={!!connecting} style={{
-                background:"#1a1608",border:"1px solid #2a2008",borderRadius:14,
-                padding:"16px 20px",display:"flex",alignItems:"center",gap:16,
-                cursor:connecting ? "wait" : "pointer",transition:"all 0.2s",
-                textAlign:"left",width:"100%",opacity:connecting&&!isConnecting?0.5:1,
-              }}
-              onMouseEnter={e => { if (!connecting) { e.currentTarget.style.borderColor="#F5E882"; e.currentTarget.style.background="#211c08"; }}}
-              onMouseLeave={e => { e.currentTarget.style.borderColor="#2a2008"; e.currentTarget.style.background="#1a1608"; }}
-              >
-                {isConnecting
-                  ? <div style={{width:40,height:40,display:"flex",alignItems:"center",justifyContent:"center"}}>
-                      <div style={{width:24,height:24,border:"3px solid #3a2e0a",borderTopColor:"#F5E882",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
-                    </div>
-                  : w.icon
-                }
-                <div style={{flex:1}}>
-                  <div style={{fontWeight:700,fontSize:15,color:"#F5F5F0",fontFamily:"'Syne',sans-serif"}}>{w.name}</div>
-                  <div style={{fontSize:12,color:"#5a4a20",marginTop:2,fontFamily:"'IBM Plex Mono',monospace"}}>
-                    {isConnecting ? "Waiting for wallet approval…" : "Click to open wallet popup"}
-                  </div>
-                </div>
-                {!isConnecting && <span style={{color:"#5a4a20",fontSize:18}}>›</span>}
-              </button>
-            );
-          })}
-        </div>
-
-        {error && (
+          {/* Sepolia badge */}
           <div style={{
-            marginTop:14,background:"#1a0a0a",border:"1px solid #5a1a1a",
-            borderRadius:10,padding:"10px 14px",fontSize:12,color:"#F87171",
+            display:"flex",alignItems:"center",justifyContent:"space-between",
+            background:"#1a1608",border:"1px solid #2a2008",borderRadius:10,
+            padding:"10px 14px",marginBottom:20,marginTop:14,
           }}>
-            {error}
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:"#4ADE80",boxShadow:"0 0 6px #4ADE80"}}/>
+              <span style={{fontSize:12,color:"#a0926a",fontFamily:"'IBM Plex Mono',monospace"}}>Ethereum Sepolia Testnet</span>
+              <span style={{fontSize:10,color:"#3a2e0a",fontFamily:"'IBM Plex Mono',monospace"}}>Chain ID: 11155111</span>
+            </div>
+            <button onClick={() => setShowGuide(true)} style={{
+              background:"none",border:"1px solid #3a2e0a",color:"#a0926a",
+              padding:"3px 9px",borderRadius:6,fontSize:10,cursor:"pointer",
+              fontFamily:"'IBM Plex Mono',monospace",transition:"all 0.15s",
+            }}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor="#F5E882";e.currentTarget.style.color="#F5E882";}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor="#3a2e0a";e.currentTarget.style.color="#a0926a";}}
+            >Add Network?</button>
           </div>
-        )}
 
-        <div style={{fontSize:11,color:"#2a2008",textAlign:"center",marginTop:16,fontFamily:"'IBM Plex Mono',monospace"}}>
-          By connecting you agree to LadderFi Terms · Powered by Concrete
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {WALLETS.map(w => {
+              const isConn = connecting === w.id;
+              return (
+                <button key={w.id} onClick={() => connect(w)} disabled={!!connecting} style={{
+                  background:"#1a1608",border:"1px solid #2a2008",borderRadius:14,
+                  padding:"16px 20px",display:"flex",alignItems:"center",gap:16,
+                  cursor:connecting ? "wait" : "pointer",width:"100%",textAlign:"left",
+                  transition:"all 0.2s",opacity:connecting && !isConn ? 0.45 : 1,
+                }}
+                onMouseEnter={e => { if (!connecting) { e.currentTarget.style.borderColor="#F5E882"; e.currentTarget.style.background="#1e1a08"; }}}
+                onMouseLeave={e => { e.currentTarget.style.borderColor="#2a2008"; e.currentTarget.style.background="#1a1608"; }}
+                >
+                  {isConn
+                    ? <div style={{width:40,height:40,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                        <div style={{width:24,height:24,border:"3px solid #3a2e0a",borderTopColor:"#F5E882",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+                      </div>
+                    : w.icon
+                  }
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:700,fontSize:15,color:"#F5F5F0",fontFamily:"'Syne',sans-serif"}}>{w.name}</div>
+                    <div style={{fontSize:12,color:"#5a4a20",marginTop:2,fontFamily:"'IBM Plex Mono',monospace"}}>
+                      {isConn ? status || "Waiting…" : "Click to open wallet popup"}
+                    </div>
+                  </div>
+                  {!isConn && <span style={{color:"#5a4a20",fontSize:18}}>›</span>}
+                </button>
+              );
+            })}
+          </div>
+
+          {error && (
+            <div style={{marginTop:14,background:"#1a0a0a",border:"1px solid #5a1a1a",borderRadius:10,padding:"10px 14px",fontSize:12,color:"#F87171"}}>
+              ⚠️ {error}
+            </div>
+          )}
+
+          <div style={{
+            marginTop:16,padding:"10px 14px",background:"#0d0c08",borderRadius:10,
+            border:"1px solid #1a1608",display:"flex",justifyContent:"space-between",alignItems:"center",
+          }}>
+            <span style={{fontSize:11,color:"#3a2e0a",fontFamily:"'IBM Plex Mono',monospace"}}>Need Sepolia ETH?</span>
+            <div style={{display:"flex",gap:8}}>
+              <a href="https://sepoliafaucet.com" target="_blank" rel="noopener noreferrer" style={{
+                fontSize:11,color:"#F5E882",fontFamily:"'IBM Plex Mono',monospace",textDecoration:"none",
+                borderBottom:"1px solid #3a2e0a",transition:"border-color 0.2s",
+              }}>Sepolia Faucet ↗</a>
+              <a href={SEPOLIA.explorer} target="_blank" rel="noopener noreferrer" style={{
+                fontSize:11,color:"#a0926a",fontFamily:"'IBM Plex Mono',monospace",textDecoration:"none",
+                borderBottom:"1px solid #3a2e0a",
+              }}>Etherscan ↗</a>
+            </div>
+          </div>
+
+          <div style={{fontSize:10,color:"#2a2008",textAlign:"center",marginTop:14,fontFamily:"'IBM Plex Mono',monospace"}}>
+            Testnet environment · No real funds · Powered by Concrete
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
-// ─── Wallet Pill + Disconnect ─────────────────────────────────────────────────
+// ─── Wallet Pill + Dropdown ───────────────────────────────────────────────────
 function WalletPill({ walletInfo, onDisconnect, onRefresh }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen]           = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const ref = useRef();
 
@@ -356,30 +503,32 @@ function WalletPill({ walletInfo, onDisconnect, onRefresh }) {
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  const refresh = async () => {
+  const doRefresh = async () => {
     setRefreshing(true);
     await onRefresh();
     setRefreshing(false);
   };
 
   const { address, balances, wallet } = walletInfo;
-  const totalStable = (balances.USDC + balances.USDT + balances.DAI);
+  const totalStable = (balances.USDC || 0) + (balances.USDT || 0) + (balances.DAI || 0);
+
+  const explorerUrl = `${SEPOLIA.explorer}/address/${address}`;
 
   return (
     <div ref={ref} style={{position:"relative"}}>
-      <button onClick={() => setOpen(o => !o)} style={{
+      <button onClick={() => setOpen(o=>!o)} style={{
         background:"#1a1608",border:"1px solid #3a2e0a",borderRadius:20,
-        padding:"6px 14px",display:"flex",alignItems:"center",gap:8,cursor:"pointer",
-        transition:"border-color 0.2s",
+        padding:"6px 14px",display:"flex",alignItems:"center",gap:8,cursor:"pointer",transition:"border-color 0.2s",
       }}
-      onMouseEnter={e => e.currentTarget.style.borderColor="#F5E882"}
-      onMouseLeave={e => e.currentTarget.style.borderColor="#3a2e0a"}
+      onMouseEnter={e=>e.currentTarget.style.borderColor="#F5E882"}
+      onMouseLeave={e=>e.currentTarget.style.borderColor="#3a2e0a"}
       >
         <div style={{width:8,height:8,borderRadius:"50%",background:"#4ADE80",boxShadow:"0 0 6px #4ADE80"}}/>
         <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:11,color:"#a0926a"}}>{short(address)}</span>
         <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:11,color:"#F5E882",fontWeight:700}}>
-          {fmtUSD(totalStable)}
+          {fmtETH(balances.eth || 0)}
         </span>
+        <span style={{fontSize:10,color:"#3a2e0a",background:"#1e1a08",border:"1px solid #2a2008",borderRadius:4,padding:"1px 5px",fontFamily:"'IBM Plex Mono',monospace"}}>Sepolia</span>
         <span style={{color:"#5a4a20",fontSize:10}}>{open?"▲":"▼"}</span>
       </button>
 
@@ -387,48 +536,79 @@ function WalletPill({ walletInfo, onDisconnect, onRefresh }) {
         <div style={{
           position:"absolute",top:"calc(100% + 8px)",right:0,
           background:"#100f0a",border:"1px solid #3a2e0a",borderRadius:14,
-          padding:16,minWidth:280,zIndex:200,boxShadow:"0 8px 40px #00000099",
+          padding:16,minWidth:300,zIndex:200,boxShadow:"0 8px 40px #00000099",
         }}>
+          {/* Wallet type */}
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,paddingBottom:12,borderBottom:"1px solid #2a2008"}}>
-            {wallet.id === "metamask" ? (
-              <svg width="22" height="22" viewBox="0 0 40 40" fill="none"><rect width="40" height="40" rx="10" fill="#1a1008"/><path d="M33 7L22.5 14.7L24.5 9.5L33 7Z" fill="#E2761B"/><path d="M7 7L17.4 14.8L15.5 9.5L7 7Z" fill="#E4761B"/></svg>
-            ) : (
-              <svg width="22" height="22" viewBox="0 0 40 40" fill="none"><rect width="40" height="40" rx="10" fill="#000"/><rect x="9" y="9" width="9" height="9" rx="1.5" fill="white"/><rect x="22" y="9" width="9" height="9" rx="1.5" fill="white"/><rect x="15.5" y="15.5" width="9" height="9" rx="1.5" fill="white"/><rect x="9" y="22" width="9" height="9" rx="1.5" fill="white"/><rect x="22" y="22" width="9" height="9" rx="1.5" fill="white"/></svg>
-            )}
+            {wallet.id === "metamask"
+              ? <svg width="20" height="20" viewBox="0 0 40 40" fill="none"><rect width="40" height="40" rx="10" fill="#1a1008"/><path d="M33 7L22.5 14.7 24.5 9.5 33 7z" fill="#E2761B"/><path d="M7 7l10.4 7.8-1.9-5.3L7 7z" fill="#E4761B"/></svg>
+              : <svg width="20" height="20" viewBox="0 0 40 40" fill="none"><rect width="40" height="40" rx="10" fill="#000"/><rect x="9" y="9" width="9" height="9" rx="1.5" fill="white"/><rect x="22" y="9" width="9" height="9" rx="1.5" fill="white"/><rect x="15.5" y="15.5" width="9" height="9" rx="1.5" fill="white"/><rect x="9" y="22" width="9" height="9" rx="1.5" fill="white"/><rect x="22" y="22" width="9" height="9" rx="1.5" fill="white"/></svg>
+            }
             <div>
               <div style={{fontSize:12,color:"#F5F5F0",fontWeight:700}}>{wallet.name}</div>
-              <div style={{fontSize:10,color:"#5a4a20",fontFamily:"'IBM Plex Mono',monospace"}}>{balances.networkName}</div>
+              <div style={{display:"flex",alignItems:"center",gap:4}}>
+                <div style={{width:6,height:6,borderRadius:"50%",background:"#4ADE80"}}/>
+                <span style={{fontSize:10,color:"#4ADE80",fontFamily:"'IBM Plex Mono',monospace"}}>Sepolia Testnet</span>
+              </div>
             </div>
+            <a href={explorerUrl} target="_blank" rel="noopener noreferrer" style={{
+              marginLeft:"auto",fontSize:10,color:"#a0926a",textDecoration:"none",
+              fontFamily:"'IBM Plex Mono',monospace",borderBottom:"1px solid #3a2e0a",
+              transition:"color 0.15s",
+            }}
+            onMouseEnter={e=>e.currentTarget.style.color="#F5E882"}
+            onMouseLeave={e=>e.currentTarget.style.color="#a0926a"}
+            >View on Etherscan ↗</a>
           </div>
 
-          <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:11,color:"#5a4a20",marginBottom:10,wordBreak:"break-all"}}>
-            {address}
-          </div>
+          {/* Address */}
+          <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:"#5a4a20",marginBottom:12,wordBreak:"break-all",background:"#1a1608",borderRadius:8,padding:"8px 10px"}}>{address}</div>
 
-          {/* On-chain balances */}
-          <div style={{background:"#1a1608",borderRadius:10,padding:"10px 14px",marginBottom:12}}>
-            <div style={{fontSize:10,color:"#3a2e0a",textTransform:"uppercase",letterSpacing:1,marginBottom:8,fontFamily:"'IBM Plex Mono',monospace"}}>
-              On-Chain Balances · {balances.networkName}
+          {/* Balances */}
+          <div style={{background:"#1a1608",borderRadius:10,padding:"12px 14px",marginBottom:14}}>
+            <div style={{fontSize:10,color:"#3a2e0a",textTransform:"uppercase",letterSpacing:1,marginBottom:10,fontFamily:"'IBM Plex Mono',monospace",display:"flex",justifyContent:"space-between"}}>
+              <span>On-Chain Balances</span>
+              <span style={{color:"#5a4a20"}}>Sepolia Testnet</span>
             </div>
             {[
-              { label:"ETH", value: fmt(balances.native, 4), unit:"ETH" },
-              { label:"USDC", value: fmtUSD(balances.USDC), unit:"" },
-              { label:"USDT", value: fmtUSD(balances.USDT), unit:"" },
-              { label:"DAI",  value: fmtUSD(balances.DAI),  unit:"" },
+              { label:"SepoliaETH", value: fmtETH(balances.eth || 0),    highlight: true },
+              { label:"USDC",       value: fmtUSD(balances.USDC || 0),   highlight: false },
+              { label:"USDT",       value: fmtUSD(balances.USDT || 0),   highlight: false },
+              { label:"DAI",        value: fmtUSD(balances.DAI  || 0),   highlight: false },
             ].map(b => (
-              <div key={b.label} style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+              <div key={b.label} style={{display:"flex",justifyContent:"space-between",marginBottom:7}}>
                 <span style={{fontSize:11,color:"#a0926a",fontFamily:"'IBM Plex Mono',monospace"}}>{b.label}</span>
-                <span style={{fontSize:11,color:"#F5E882",fontWeight:700,fontFamily:"'IBM Plex Mono',monospace"}}>{b.value} {b.unit}</span>
+                <span style={{fontSize:11,color: b.highlight ? "#F5E882" : "#F5F5F0",fontWeight:700,fontFamily:"'IBM Plex Mono',monospace"}}>{b.value}</span>
               </div>
             ))}
-            <div style={{borderTop:"1px solid #2a2008",paddingTop:6,marginTop:6,display:"flex",justifyContent:"space-between"}}>
-              <span style={{fontSize:11,color:"#5a4a20",fontFamily:"'IBM Plex Mono',monospace"}}>Total Stables</span>
-              <span style={{fontSize:12,color:"#F5E882",fontWeight:700,fontFamily:"'IBM Plex Mono',monospace"}}>{fmtUSD(totalStable)}</span>
+            <div style={{borderTop:"1px solid #2a2008",paddingTop:8,marginTop:4,display:"flex",justifyContent:"space-between"}}>
+              <span style={{fontSize:10,color:"#5a4a20",fontFamily:"'IBM Plex Mono',monospace"}}>Total Stablecoins</span>
+              <span style={{fontSize:12,color:"#F5E882",fontWeight:800,fontFamily:"'IBM Plex Mono',monospace"}}>{fmtUSD(totalStable)}</span>
             </div>
+          </div>
+
+          {/* Faucet + Explorer links */}
+          <div style={{display:"flex",gap:6,marginBottom:10}}>
+            <a href={SEPOLIA.explorer} target="_blank" rel="noopener noreferrer" style={{
+              flex:1,padding:"7px 0",textAlign:"center",background:"#0d0c08",
+              border:"1px solid #1a1608",borderRadius:7,
+              fontSize:11,color:"#a0926a",textDecoration:"none",fontFamily:"'IBM Plex Mono',monospace",transition:"all 0.15s",
+            }}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor="#F5E882";e.currentTarget.style.color="#F5E882";}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a1608";e.currentTarget.style.color="#a0926a";}}
+            >Etherscan ↗</a>
+            <a href="https://sepoliafaucet.com" target="_blank" rel="noopener noreferrer" style={{
+              flex:1,padding:"7px 0",textAlign:"center",background:"#0d0c08",
+              border:"1px solid #1a1608",borderRadius:7,
+              fontSize:11,color:"#a0926a",textDecoration:"none",fontFamily:"'IBM Plex Mono',monospace",transition:"all 0.15s",
+            }}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor="#F5E882";e.currentTarget.style.color="#F5E882";}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a1608";e.currentTarget.style.color="#a0926a";}}
+            >🚰 Faucet ↗</a>
           </div>
 
           <div style={{display:"flex",gap:8}}>
-            <button onClick={refresh} disabled={refreshing} style={{
+            <button onClick={doRefresh} disabled={refreshing} style={{
               flex:1,padding:"9px",background:"#1a1608",border:"1px solid #2a2008",
               color:"#a0926a",borderRadius:8,cursor:"pointer",fontSize:12,
               fontFamily:"'Syne',sans-serif",fontWeight:700,transition:"all 0.2s",
@@ -437,10 +617,7 @@ function WalletPill({ walletInfo, onDisconnect, onRefresh }) {
             onMouseEnter={e=>{e.currentTarget.style.borderColor="#F5E882";e.currentTarget.style.color="#F5E882";}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor="#2a2008";e.currentTarget.style.color="#a0926a";}}
             >
-              {refreshing
-                ? <span style={{width:12,height:12,border:"2px solid #3a2e0a",borderTopColor:"#F5E882",borderRadius:"50%",animation:"spin 0.7s linear infinite",display:"inline-block"}}/>
-                : "↻ Refresh"
-              }
+              {refreshing ? <Spinner/> : "↻ Refresh"}
             </button>
             <button onClick={() => { setOpen(false); onDisconnect(); }} style={{
               flex:1,padding:"9px",background:"#1a0808",border:"1px solid #5a1a1a",
@@ -449,9 +626,7 @@ function WalletPill({ walletInfo, onDisconnect, onRefresh }) {
             }}
             onMouseEnter={e=>{e.currentTarget.style.background="#2a0a0a";e.currentTarget.style.borderColor="#F87171";}}
             onMouseLeave={e=>{e.currentTarget.style.background="#1a0808";e.currentTarget.style.borderColor="#5a1a1a";}}
-            >
-              Disconnect
-            </button>
+            >Disconnect</button>
           </div>
         </div>
       )}
@@ -459,7 +634,7 @@ function WalletPill({ walletInfo, onDisconnect, onRefresh }) {
   );
 }
 
-// ─── Reusable sub-components ──────────────────────────────────────────────────
+// ─── Utility Components ───────────────────────────────────────────────────────
 function LadderBar({ vault, alloc, animated }) {
   const [w, setW] = useState(0);
   useEffect(() => { if (animated) setTimeout(() => setW(alloc), 80); }, [alloc, animated]);
@@ -473,43 +648,41 @@ function LadderBar({ vault, alloc, animated }) {
         </div>
       </div>
       <div style={{height:7,background:"#1a1608",borderRadius:4,overflow:"hidden"}}>
-        <div style={{
-          height:"100%",borderRadius:4,
-          background:`linear-gradient(90deg, ${vault.dimColor}, ${vault.color})`,
-          width:`${w}%`,transition:"width 0.9s cubic-bezier(0.34,1.56,0.64,1)",
-          boxShadow:`0 0 10px ${vault.color}55`,
-        }}/>
+        <div style={{height:"100%",borderRadius:4,background:`linear-gradient(90deg,${vault.dimColor},${vault.color})`,width:`${w}%`,transition:"width 0.9s cubic-bezier(0.34,1.56,0.64,1)",boxShadow:`0 0 10px ${vault.color}55`}}/>
       </div>
     </div>
   );
 }
 
-function StatCard({ label, value, sub, accent }) {
-  return (
-    <div style={{background:"#100f0a",border:"1px solid #2a2008",borderRadius:12,padding:"16px 14px"}}>
+function StatCard({ label, value, sub, accent, href }) {
+  const inner = (
+    <div style={{background:"#100f0a",border:"1px solid #2a2008",borderRadius:12,padding:"16px 14px",transition:"border-color 0.2s",cursor:href?"pointer":"default"}}>
       <div style={{fontSize:10,color:"#3a2e0a",textTransform:"uppercase",letterSpacing:2,marginBottom:6,fontFamily:"'IBM Plex Mono',monospace"}}>{label}</div>
       <div style={{fontSize:22,fontWeight:800,color:accent||"#F5F5F0",fontFamily:"'DM Serif Display',serif",lineHeight:1}}>{value}</div>
       {sub && <div style={{fontSize:10,color:"#5a4a20",marginTop:4}}>{sub}</div>}
     </div>
   );
+  if (href) return <a href={href} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none"}}
+    onMouseEnter={e=>e.firstChild && (e.currentTarget.firstChild.style.borderColor="#F5E882")}
+    onMouseLeave={e=>e.firstChild && (e.currentTarget.firstChild.style.borderColor="#2a2008")}
+  >{inner}</a>;
+  return inner;
 }
 
 function DonutChart({ allocs }) {
-  const s=130,cx=65,cy=65,r=48,sw=15,c=2*Math.PI*r;
+  const sz=130,cx=65,cy=65,r=48,sw=15,c=2*Math.PI*r;
   let o=0;
   const segs=VAULTS.map((v,i)=>{const p=allocs[i]/100,d={v,p,o,dash:p*c,gap:(1-p)*c};o+=p*c;return d;});
   return (
-    <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`}>
+    <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`}>
       <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1a1608" strokeWidth={sw}/>
       {segs.map(({v,dash,gap,o:off},i)=>(
         <circle key={i} cx={cx} cy={cy} r={r} fill="none" stroke={v.color} strokeWidth={sw}
           strokeDasharray={`${dash} ${gap}`} strokeDashoffset={-off+c/4}
-          style={{filter:`drop-shadow(0 0 4px ${v.color}66)`}}/>
+          style={{filter:`drop-shadow(0 0 4px ${v.color}55)`}}/>
       ))}
       <text x={cx} y={cy-5} textAnchor="middle" fill="#a0926a" fontSize={9} fontFamily="monospace">BLEND</text>
-      <text x={cx} y={cy+10} textAnchor="middle" fill="#F5E882" fontSize={14} fontWeight="bold" fontFamily="'DM Serif Display',serif">
-        {fmtPct(blendedAPY(allocs))}
-      </text>
+      <text x={cx} y={cy+10} textAnchor="middle" fill="#F5E882" fontSize={14} fontWeight="bold" fontFamily="'DM Serif Display',serif">{fmtPct(blendedAPY(allocs))}</text>
     </svg>
   );
 }
@@ -541,13 +714,9 @@ function Notification({ n }) {
   if (!n) return null;
   const c={success:"#4ADE80",error:"#F87171",warn:"#FBBF24",info:"#F5E882"};
   return (
-    <div style={{
-      position:"fixed",top:20,right:20,zIndex:9999,
-      background:"#100f0a",border:`1px solid ${c[n.type]||c.success}`,
-      borderRadius:10,padding:"12px 20px",fontSize:13,color:"#F5F5F0",
-      boxShadow:`0 0 24px ${c[n.type]||c.success}33`,
-      animation:"slideIn 0.3s ease",fontFamily:"'Syne',sans-serif",maxWidth:360,
-    }}>{n.msg}</div>
+    <div style={{position:"fixed",top:20,right:20,zIndex:9999,background:"#100f0a",border:`1px solid ${c[n.type]||c.success}`,borderRadius:10,padding:"12px 20px",fontSize:13,color:"#F5F5F0",boxShadow:`0 0 24px ${c[n.type]||c.success}33`,animation:"slideIn 0.3s ease",fontFamily:"'Syne',sans-serif",maxWidth:380}}>
+      {n.msg}
+    </div>
   );
 }
 
@@ -557,21 +726,22 @@ function Spinner({ color="#F5E882" }) {
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [page,      setPage]      = useState("home");
-  const [showModal, setShowModal] = useState(false);
-  const [walletInfo,setWalletInfo]= useState(null);
-  const [deposited, setDeposited] = useState(0);
-  const [earnings,  setEarnings]  = useState(0);
-  const [depositAmt,setDepositAmt]= useState("");
-  const [token,     setToken]     = useState("USDC");
-  const [profile,   setProfile]   = useState("balanced");
-  const [payout,    setPayout]    = useState("compound");
-  const [txPending, setTxPending] = useState(false);
-  const [txDone,    setTxDone]    = useState(false);
-  const [animated,  setAnimated]  = useState(false);
-  const [safeMode,  setSafeMode]  = useState(false);
-  const [withdrawAmt,setWithdrawAmt]=useState("");
-  const [notification,setNotification]=useState(null);
+  const [page,       setPage]       = useState("home");
+  const [showModal,  setShowModal]  = useState(false);
+  const [walletInfo, setWalletInfo] = useState(null);
+  const [wrongChain, setWrongChain] = useState(false);
+  const [deposited,  setDeposited]  = useState(0);
+  const [earnings,   setEarnings]   = useState(0);
+  const [depositAmt, setDepositAmt] = useState("");
+  const [token,      setToken]      = useState("USDC");
+  const [profile,    setProfile]    = useState("balanced");
+  const [payout,     setPayout]     = useState("compound");
+  const [txPending,  setTxPending]  = useState(false);
+  const [txDone,     setTxDone]     = useState(false);
+  const [animated,   setAnimated]   = useState(false);
+  const [safeMode,   setSafeMode]   = useState(false);
+  const [withdrawAmt,setWithdrawAmt]= useState("");
+  const [notif,      setNotif]      = useState(null);
 
   const allocs = PROFILES[profile].allocs;
   const apy    = blendedAPY(allocs);
@@ -585,19 +755,34 @@ export default function App() {
   useEffect(() => { if (page==="dashboard") setAnimated(true); }, [page]);
 
   const notify = useCallback((msg, type="success") => {
-    setNotification({msg,type});
-    setTimeout(()=>setNotification(null),4000);
+    setNotif({msg,type});
+    setTimeout(()=>setNotif(null), 4000);
   },[]);
 
-  const handleConnect = (info) => {
+  // Listen for chain changes
+  useEffect(() => {
+    if (!walletInfo?.provider) return;
+    const p = walletInfo.provider;
+    const handler = (chainHex) => {
+      const id = parseInt(chainHex, 16);
+      setWrongChain(id !== SEPOLIA.chainId);
+    };
+    p.on?.("chainChanged", handler);
+    return () => p.removeListener?.("chainChanged", handler);
+  }, [walletInfo?.provider]);
+
+  const handleConnect = async (info) => {
     setWalletInfo(info);
     setShowModal(false);
-    const stables = info.balances.USDC + info.balances.USDT + info.balances.DAI;
-    notify(`✓ ${info.wallet.name} connected · ${info.balances.networkName} · ${fmtUSD(stables)} stables`, "info");
+    setWrongChain(false);
+    const eth = fmt(info.balances.eth || 0, 4);
+    const stables = fmtUSD((info.balances.USDC||0)+(info.balances.USDT||0)+(info.balances.DAI||0));
+    notify(`✓ ${info.wallet.name} connected · Sepolia · ${eth} ETH · ${stables} stables`, "info");
   };
 
   const handleDisconnect = () => {
     setWalletInfo(null);
+    setWrongChain(false);
     setDeposited(0);
     setEarnings(0);
     setPage("home");
@@ -606,28 +791,29 @@ export default function App() {
 
   const refreshBalances = async () => {
     if (!walletInfo) return;
-    const chainId = await getChainId(walletInfo.provider);
-    const balances = await fetchAllBalances(walletInfo.address, chainId);
-    setWalletInfo(w => ({ ...w, balances }));
-    notify("Balances refreshed","info");
+    const balances = await fetchSepoliaBalances(walletInfo.address);
+    setWalletInfo(w => ({...w, balances}));
+    notify("Balances refreshed from Sepolia","info");
   };
 
-  // Available stablecoin balance for selected token
+  const handleSwitched = async () => {
+    setWrongChain(false);
+    const balances = await fetchSepoliaBalances(walletInfo.address);
+    setWalletInfo(w => ({...w, balances}));
+    notify("✓ Switched to Sepolia Testnet","success");
+  };
+
   const availableBalance = walletInfo ? (walletInfo.balances[token] ?? 0) : 0;
 
   const handleDeposit = () => {
     const amt = parseFloat(depositAmt);
     if (!amt || amt <= 0) return notify("Enter a valid amount","error");
     if (!walletInfo) { setShowModal(true); return; }
-    if (amt > availableBalance) return notify(`Insufficient ${token} balance (available: ${fmtUSD(availableBalance)})`, "error");
-
+    if (wrongChain) return notify("Please switch to Sepolia first","error");
+    if (amt > availableBalance) return notify(`Insufficient ${token} — available: ${fmtUSD(availableBalance)}`,"error");
     setTxPending(true);
     setTimeout(() => {
-      // Deduct from wallet balance immediately
-      setWalletInfo(w => ({
-        ...w,
-        balances: { ...w.balances, [token]: parseFloat((w.balances[token] - amt).toFixed(2)) },
-      }));
+      setWalletInfo(w => ({...w, balances: {...w.balances, [token]: parseFloat((w.balances[token]-amt).toFixed(6))}}));
       setDeposited(amt);
       setEarnings(0);
       setTxPending(false);
@@ -641,80 +827,61 @@ export default function App() {
     if (!amt || amt <= 0) return notify("Enter a valid amount","error");
     const max7d = deposited * allocs[0] / 100;
     if (amt > max7d) return notify(`Max from 7-day vault: ${fmtUSD(max7d)}`,"error");
-
     setTxPending(true);
     setTimeout(() => {
-      setDeposited(d => parseFloat((d - amt).toFixed(2)));
-      setWalletInfo(w => ({
-        ...w,
-        balances: { ...w.balances, [token]: parseFloat(((w.balances[token]||0) + amt).toFixed(2)) },
-      }));
+      setDeposited(d => parseFloat((d-amt).toFixed(6)));
+      setWalletInfo(w => ({...w, balances: {...w.balances, [token]: parseFloat(((w.balances[token]||0)+amt).toFixed(6))}}));
       setWithdrawAmt("");
       setTxPending(false);
-      notify(`✓ ${fmtUSD(amt)} returned to wallet`);
+      notify(`✓ ${fmtUSD(amt)} returned to your Sepolia wallet`);
     }, 1800);
   };
 
-  // ── Shared Navbar ──
+  // ── Shared Navbar ────────────────────────────────────────────────────────────
   const Navbar = () => (
-    <nav style={{
-      display:"flex",alignItems:"center",justifyContent:"space-between",
-      padding:"0 28px",height:64,borderBottom:"1px solid #2a2008",
-      background:"#09090acc",backdropFilter:"blur(14px)",
-      position:"sticky",top:0,zIndex:100,
-    }}>
-      <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={()=>setPage("home")}>
-        <Logo size={30}/>
-        <div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:600,fontSize:16,letterSpacing:2,color:"#F5F5F0"}}>
-          LADDER<span style={{color:"#F5E882"}}>·</span>FI
+    <>
+      <nav style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 28px",height:64,borderBottom:"1px solid #2a2008",background:"#09090acc",backdropFilter:"blur(14px)",position:"sticky",top:0,zIndex:100}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={()=>setPage("home")}>
+          <Logo size={30}/>
+          <div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:600,fontSize:16,letterSpacing:2,color:"#F5F5F0"}}>
+            LADDER<span style={{color:"#F5E882"}}>·</span>FI
+          </div>
+          <span style={{fontSize:10,color:"#2a2008",fontFamily:"'IBM Plex Mono',monospace",letterSpacing:1,marginLeft:4}}>on Concrete</span>
         </div>
-        <span style={{fontSize:10,color:"#2a2008",fontFamily:"'IBM Plex Mono',monospace",letterSpacing:1,marginLeft:4}}>on Concrete</span>
-      </div>
 
-      <UTCClock/>
+        <UTCClock/>
 
-      <div style={{display:"flex",gap:8,alignItems:"center"}}>
-        {walletInfo && deposited > 0 && (
-          <button onClick={()=>setPage(page==="dashboard"?"deposit":"dashboard")} style={{
-            background:"none",border:"1px solid #3a2e0a",color:"#a0926a",
-            padding:"6px 14px",borderRadius:8,fontSize:12,cursor:"pointer",
-            fontFamily:"'Syne',sans-serif",fontWeight:700,transition:"all 0.2s",
-          }}
-          onMouseEnter={e=>{e.currentTarget.style.borderColor="#F5E882";e.currentTarget.style.color="#F5E882";}}
-          onMouseLeave={e=>{e.currentTarget.style.borderColor="#3a2e0a";e.currentTarget.style.color="#a0926a";}}
-          >{page==="dashboard"?"+ Add Funds":"Dashboard"}</button>
-        )}
-        {walletInfo ? (
-          <WalletPill walletInfo={walletInfo} onDisconnect={handleDisconnect} onRefresh={refreshBalances}/>
-        ) : (
-          <button onClick={()=>setShowModal(true)} style={{
-            background:"#F5E882",color:"#0a0900",border:"none",borderRadius:8,
-            padding:"10px 20px",fontFamily:"'Syne',sans-serif",fontWeight:800,
-            fontSize:13,cursor:"pointer",boxShadow:"0 0 18px #F5E88233",transition:"all 0.2s",
-          }}
-          onMouseEnter={e=>e.currentTarget.style.background="#ffe94d"}
-          onMouseLeave={e=>e.currentTarget.style.background="#F5E882"}
-          >Connect Wallet</button>
-        )}
-      </div>
-    </nav>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          {walletInfo && deposited > 0 && (
+            <button onClick={()=>setPage(page==="dashboard"?"deposit":"dashboard")} style={{background:"none",border:"1px solid #3a2e0a",color:"#a0926a",padding:"6px 14px",borderRadius:8,fontSize:12,cursor:"pointer",fontFamily:"'Syne',sans-serif",fontWeight:700,transition:"all 0.2s"}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor="#F5E882";e.currentTarget.style.color="#F5E882";}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor="#3a2e0a";e.currentTarget.style.color="#a0926a";}}
+            >{page==="dashboard"?"+ Add Funds":"Dashboard"}</button>
+          )}
+          {walletInfo ? (
+            <WalletPill walletInfo={walletInfo} onDisconnect={handleDisconnect} onRefresh={refreshBalances}/>
+          ) : (
+            <button onClick={()=>setShowModal(true)} style={{background:"#F5E882",color:"#0a0900",border:"none",borderRadius:8,padding:"10px 20px",fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:13,cursor:"pointer",boxShadow:"0 0 18px #F5E88233",transition:"all 0.2s"}}
+            onMouseEnter={e=>e.currentTarget.style.background="#ffe94d"}
+            onMouseLeave={e=>e.currentTarget.style.background="#F5E882"}
+            >Connect Wallet</button>
+          )}
+        </div>
+      </nav>
+      {wrongChain && walletInfo && <NetworkBanner provider={walletInfo.provider} onSwitched={handleSwitched}/>}
+    </>
   );
 
-  // ── HOME ──
+  // ── HOME PAGE ────────────────────────────────────────────────────────────────
   if (page === "home") return (
     <div style={{minHeight:"100vh",background:"#09090a",color:"#F5F5F0",fontFamily:"'Syne',sans-serif"}}>
       <style>{CSS}</style>
       {showModal && <WalletModal onConnect={handleConnect} onClose={()=>setShowModal(false)}/>}
-      <Notification n={notification}/>
+      <Notification n={notif}/>
       <Navbar/>
+
       <div style={{position:"relative",padding:"90px 24px 70px",textAlign:"center",overflow:"hidden"}}>
-        <div style={{
-          position:"absolute",inset:0,
-          backgroundImage:"linear-gradient(#2a200840 1px,transparent 1px),linear-gradient(90deg,#2a200840 1px,transparent 1px)",
-          backgroundSize:"40px 40px",
-          maskImage:"radial-gradient(ellipse 80% 80% at 50% 50%,black 30%,transparent 100%)",
-          opacity:.4,
-        }}/>
+        <div style={{position:"absolute",inset:0,backgroundImage:"linear-gradient(#2a200840 1px,transparent 1px),linear-gradient(90deg,#2a200840 1px,transparent 1px)",backgroundSize:"40px 40px",maskImage:"radial-gradient(ellipse 80% 80% at 50% 50%,black 30%,transparent 100%)",opacity:.4}}/>
         <div style={{position:"relative",zIndex:2,maxWidth:680,margin:"0 auto"}}>
           <div style={{display:"flex",justifyContent:"center",marginBottom:20}}>
             <div style={{display:"flex",alignItems:"center",gap:10,background:"#1a1608",border:"1px solid #3a2e0a",borderRadius:30,padding:"8px 18px"}}>
@@ -722,40 +889,35 @@ export default function App() {
               <span style={{fontSize:11,color:"#a0926a",fontFamily:"'IBM Plex Mono',monospace",letterSpacing:2}}>POWERED BY CONCRETE</span>
             </div>
           </div>
-          <h1 style={{fontFamily:"'DM Serif Display',serif",fontSize:"clamp(42px,6vw,68px)",lineHeight:1.1,marginBottom:20,color:"#F5F5F0"}}>
+
+          {/* Sepolia testnet notice */}
+          <div style={{display:"flex",justifyContent:"center",marginBottom:22}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,background:"#0d1a0d",border:"1px solid #166534",borderRadius:20,padding:"6px 16px"}}>
+              <div style={{width:7,height:7,borderRadius:"50%",background:"#4ADE80",animation:"pulse 2s infinite"}}/>
+              <span style={{fontSize:11,color:"#4ADE80",fontFamily:"'IBM Plex Mono',monospace",letterSpacing:1}}>Running on Ethereum Sepolia Testnet</span>
+              <a href={SEPOLIA.explorer} target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"#4ADE80",fontFamily:"'IBM Plex Mono',monospace",textDecoration:"none",opacity:0.7}}>↗</a>
+            </div>
+          </div>
+
+          <h1 style={{fontFamily:"'DM Serif Display',serif",fontSize:"clamp(40px,6vw,68px)",lineHeight:1.1,marginBottom:20,color:"#F5F5F0"}}>
             Your Stablecoins.<br/><span style={{color:"#F5E882"}}>Working In Tiers.</span>
           </h1>
           <p style={{color:"#5a4a20",fontSize:16,maxWidth:500,margin:"0 auto 36px",lineHeight:1.7}}>
             Deposit once. LadderFi builds a rolling yield ladder across 7–180-day Concrete vaults and auto-rolls every maturity into the best available rate.
           </p>
           <div style={{display:"flex",gap:12,justifyContent:"center",flexWrap:"wrap"}}>
-            <button onClick={()=>walletInfo?setPage("deposit"):setShowModal(true)} style={{
-              background:"#F5E882",color:"#0a0900",border:"none",borderRadius:10,
-              padding:"14px 28px",fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:15,
-              cursor:"pointer",boxShadow:"0 0 24px #F5E88233",transition:"all 0.2s",
-            }}
+            <button onClick={()=>walletInfo?setPage("deposit"):setShowModal(true)} style={{background:"#F5E882",color:"#0a0900",border:"none",borderRadius:10,padding:"14px 28px",fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:15,cursor:"pointer",boxShadow:"0 0 24px #F5E88233",transition:"all 0.2s"}}
             onMouseEnter={e=>e.currentTarget.style.background="#ffe94d"}
             onMouseLeave={e=>e.currentTarget.style.background="#F5E882"}
             >{walletInfo?"Start Earning →":"Connect & Earn →"}</button>
-            <button onClick={()=>setPage("deposit")} style={{
-              background:"transparent",color:"#F5F5F0",border:"1px solid #2a2008",
-              borderRadius:10,padding:"14px 28px",fontFamily:"'Syne',sans-serif",
-              fontWeight:700,fontSize:15,cursor:"pointer",transition:"all 0.2s",
-            }}
+            <button onClick={()=>setPage("deposit")} style={{background:"transparent",color:"#F5F5F0",border:"1px solid #2a2008",borderRadius:10,padding:"14px 28px",fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:15,cursor:"pointer",transition:"all 0.2s"}}
             onMouseEnter={e=>{e.currentTarget.style.borderColor="#F5E882";e.currentTarget.style.color="#F5E882";}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor="#2a2008";e.currentTarget.style.color="#F5F5F0";}}
             >View Vaults</button>
           </div>
-          <div style={{
-            display:"flex",border:"1px solid #2a2008",borderRadius:14,overflow:"hidden",
-            maxWidth:620,margin:"48px auto 0",background:"#0d0c08",
-          }}>
-            {[
-              {l:"Total Value Locked",v:"$902.3M"},
-              {l:"Assets Processed",v:"$11.25B"},
-              {l:"Max Blended APY",v:"~10.1%"},
-              {l:"Chains Supported",v:"6"},
-            ].map((s,i,a)=>(
+
+          <div style={{display:"flex",border:"1px solid #2a2008",borderRadius:14,overflow:"hidden",maxWidth:620,margin:"48px auto 0",background:"#0d0c08"}}>
+            {[{l:"TVL",v:"$902.3M"},{l:"Processed",v:"$11.25B"},{l:"Max APY",v:"~10.1%"},{l:"Chains",v:"6"}].map((s,i,a)=>(
               <div key={s.l} style={{flex:1,padding:"18px 10px",borderRight:i<a.length-1?"1px solid #2a2008":"none",textAlign:"center"}}>
                 <div style={{fontFamily:"'DM Serif Display',serif",fontSize:20,color:"#F5E882",fontWeight:800}}>{s.v}</div>
                 <div style={{fontSize:9,color:"#3a2e0a",letterSpacing:1,marginTop:2,fontFamily:"'IBM Plex Mono',monospace"}}>{s.l}</div>
@@ -765,17 +927,18 @@ export default function App() {
         </div>
       </div>
 
+      {/* How it works */}
       <div style={{maxWidth:1100,margin:"0 auto",padding:"40px 24px 80px"}}>
         <div style={{fontSize:11,letterSpacing:3,color:"#F5E882",fontFamily:"'IBM Plex Mono',monospace",marginBottom:10}}>HOW IT WORKS</div>
         <h2 style={{fontFamily:"'DM Serif Display',serif",fontSize:32,color:"#F5F5F0",marginBottom:32}}>The Yield Ladder Strategy</h2>
         <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14}}>
           {[
-            {n:"01",t:"Deposit Stablecoins",d:"Connect your MetaMask or OKX wallet. Your real on-chain balance is read instantly."},
-            {n:"02",t:"Automatic Allocation",d:"Capital splits across 4 maturity buckets — 7, 30, 90, 180 days — by your chosen profile."},
-            {n:"03",t:"Yield Accrues Daily",d:"Each vault earns institutional yields via Concrete across Morpho, Pendle, Aave & more."},
-            {n:"04",t:"Auto-Rollover",d:"Maturing positions auto-redeploy into the highest-yield opportunity. Zero manual work."},
+            {n:"01",t:"Connect Wallet",d:"Connect MetaMask or OKX Wallet. The app auto-switches to Sepolia Testnet and reads your real balances."},
+            {n:"02",t:"Deposit Stablecoins",d:"Choose USDC, USDT, or DAI. Your balance is verified on-chain via Sepolia Etherscan before deposit."},
+            {n:"03",t:"Yield Accrues Daily",d:"Capital splits across 4 maturity buckets. Each earns institutional yield via Concrete vaults."},
+            {n:"04",t:"Auto-Rollover",d:"Every maturing vault auto-redeploys into the best available rate — zero manual work required."},
           ].map(s=>(
-            <div key={s.n} style={{background:"#100f0a",border:"1px solid #2a2008",borderRadius:12,padding:"20px 18px",transition:"border-color 0.2s,transform 0.2s",cursor:"default"}}
+            <div key={s.n} style={{background:"#100f0a",border:"1px solid #2a2008",borderRadius:12,padding:"20px 18px",transition:"border-color 0.2s,transform 0.2s"}}
             onMouseEnter={e=>{e.currentTarget.style.borderColor="#F5E882";e.currentTarget.style.transform="translateY(-3px)";}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor="#2a2008";e.currentTarget.style.transform="none";}}
             >
@@ -785,6 +948,30 @@ export default function App() {
             </div>
           ))}
         </div>
+
+        {/* Sepolia Resources */}
+        <div style={{marginTop:48,background:"#100f0a",border:"1px solid #2a2008",borderRadius:16,padding:"24px 28px"}}>
+          <div style={{fontSize:11,letterSpacing:3,color:"#F5E882",fontFamily:"'IBM Plex Mono',monospace",marginBottom:10}}>TESTNET RESOURCES</div>
+          <h3 style={{fontFamily:"'DM Serif Display',serif",fontSize:22,color:"#F5F5F0",marginBottom:16}}>Getting Started on Sepolia</h3>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>
+            {[
+              {icon:"🔍",title:"Sepolia Etherscan",desc:"View transactions, check balances, and verify contracts on Sepolia.",href:SEPOLIA.explorer},
+              {icon:"🚰",title:"Sepolia Faucet",desc:"Get free Sepolia test ETH to cover gas fees for transactions.",href:"https://sepoliafaucet.com"},
+              {icon:"🔧",title:"Add to Wallet",desc:"One-click add Sepolia Testnet to your MetaMask or OKX Wallet.",href:null,action:()=>setShowModal(true)},
+            ].map((r,i) => (
+              <div key={i} style={{background:"#0d0c08",border:"1px solid #1a1608",borderRadius:12,padding:"18px 16px",transition:"border-color 0.2s",cursor:"pointer"}}
+              onMouseEnter={e=>e.currentTarget.style.borderColor="#F5E882"}
+              onMouseLeave={e=>e.currentTarget.style.borderColor="#1a1608"}
+              onClick={()=>{ if(r.href) window.open(r.href,"_blank"); else r.action?.(); }}
+              >
+                <div style={{fontSize:24,marginBottom:8}}>{r.icon}</div>
+                <div style={{fontWeight:700,fontSize:14,color:"#F5F5F0",marginBottom:6}}>{r.title}</div>
+                <div style={{fontSize:12,color:"#5a4a20",lineHeight:1.5}}>{r.desc}</div>
+                <div style={{marginTop:10,fontSize:11,color:"#F5E882",fontFamily:"'IBM Plex Mono',monospace"}}>{r.href?"Open ↗":"Connect →"}</div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
       <footer style={{textAlign:"center",padding:"32px 24px",borderTop:"1px solid #1a1608"}}>
@@ -792,104 +979,91 @@ export default function App() {
           <Logo size={22}/>
           <span style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:600,fontSize:14,letterSpacing:2,color:"#F5F5F0"}}>LADDER<span style={{color:"#F5E882"}}>·</span>FI</span>
         </div>
-        <div style={{fontSize:11,color:"#2a2008",fontFamily:"'IBM Plex Mono',monospace"}}>Built on Concrete · Audited by Cantina, Halborn, Zellic · © 2025</div>
+        <div style={{display:"flex",justifyContent:"center",gap:16,marginBottom:8}}>
+          <a href={SEPOLIA.explorer} target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"#3a2e0a",textDecoration:"none",fontFamily:"'IBM Plex Mono',monospace"}}
+          onMouseEnter={e=>e.currentTarget.style.color="#F5E882"}
+          onMouseLeave={e=>e.currentTarget.style.color="#3a2e0a"}
+          >Sepolia Etherscan ↗</a>
+          <a href="https://concrete.xyz" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"#3a2e0a",textDecoration:"none",fontFamily:"'IBM Plex Mono',monospace"}}
+          onMouseEnter={e=>e.currentTarget.style.color="#F5E882"}
+          onMouseLeave={e=>e.currentTarget.style.color="#3a2e0a"}
+          >Concrete.xyz ↗</a>
+        </div>
+        <div style={{fontSize:11,color:"#1a1608",fontFamily:"'IBM Plex Mono',monospace"}}>Testnet Environment · Built on Concrete · © 2025</div>
       </footer>
     </div>
   );
 
-  // ── DEPOSIT ──
+  // ── DEPOSIT PAGE ─────────────────────────────────────────────────────────────
   if (page === "deposit") return (
     <div style={{minHeight:"100vh",background:"#09090a",color:"#F5F5F0",fontFamily:"'Syne',sans-serif"}}>
       <style>{CSS}</style>
       {showModal && <WalletModal onConnect={handleConnect} onClose={()=>setShowModal(false)}/>}
-      <Notification n={notification}/>
+      <Notification n={notif}/>
       <Navbar/>
-      <div style={{maxWidth:1080,margin:"0 auto",padding:"36px 24px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:32}}>
+      <div style={{maxWidth:1080,margin:"0 auto",padding:"32px 24px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:32}}>
         {/* Left */}
         <div>
           <h2 style={{fontFamily:"'DM Serif Display',serif",fontSize:28,color:"#F5F5F0",marginBottom:6}}>Configure Your Ladder</h2>
           <p style={{color:"#5a4a20",marginBottom:26,fontSize:13}}>Set it once. The protocol manages the rest.</p>
 
-          {/* Token + Amount */}
           <div style={{marginBottom:22}}>
             <div style={{fontSize:10,color:"#3a2e0a",letterSpacing:2,textTransform:"uppercase",marginBottom:9,fontFamily:"'IBM Plex Mono',monospace"}}>Asset & Amount</div>
             <div style={{display:"flex",gap:8,marginBottom:7}}>
               <div style={{display:"flex"}}>
                 {["USDC","USDT","DAI"].map((t,i,arr)=>(
                   <button key={t} onClick={()=>setToken(t)} style={{
-                    background:token===t?"#F5E882":"#1a1608",
-                    color:token===t?"#0a0900":"#5a4a20",
+                    background:token===t?"#F5E882":"#1a1608",color:token===t?"#0a0900":"#5a4a20",
                     border:"1px solid",borderColor:token===t?"#F5E882":"#2a2008",
                     padding:"9px 13px",fontSize:12,cursor:"pointer",
                     fontFamily:"'IBM Plex Mono',monospace",fontWeight:token===t?700:400,
-                    borderRadius:i===0?"8px 0 0 8px":i===arr.length-1?"0 8px 8px 0":"0",
-                    transition:"all 0.15s",
+                    borderRadius:i===0?"8px 0 0 8px":i===arr.length-1?"0 8px 8px 0":"0",transition:"all 0.15s",
                   }}>{t}</button>
                 ))}
               </div>
-              <input type="number" placeholder="0.00" value={depositAmt} onChange={e=>setDepositAmt(e.target.value)} style={{
-                flex:1,background:"#1a1608",border:"1px solid #2a2008",borderRadius:8,
-                color:"#F5F5F0",padding:"9px 12px",fontSize:18,fontFamily:"'DM Serif Display',serif",outline:"none",
-              }}
+              <input type="number" placeholder="0.00" value={depositAmt} onChange={e=>setDepositAmt(e.target.value)} style={{flex:1,background:"#1a1608",border:"1px solid #2a2008",borderRadius:8,color:"#F5F5F0",padding:"9px 12px",fontSize:18,fontFamily:"'DM Serif Display',serif",outline:"none"}}
               onFocus={e=>e.target.style.borderColor="#F5E882"}
               onBlur={e=>e.target.style.borderColor="#2a2008"}
               />
             </div>
             {walletInfo && (
-              <div style={{fontSize:11,color:"#5a4a20",marginBottom:7}}>
-                Available: <span style={{color:"#F5E882",fontWeight:700}}>{fmtUSD(availableBalance)} {token}</span>
-                {" "}· Chain: <span style={{color:"#a0926a"}}>{walletInfo.balances.networkName}</span>
+              <div style={{fontSize:11,color:"#5a4a20",marginBottom:7,display:"flex",alignItems:"center",gap:10}}>
+                <span>Available: <span style={{color:"#F5E882",fontWeight:700}}>{fmtUSD(availableBalance)} {token}</span></span>
+                <span style={{color:"#3a2e0a"}}>·</span>
+                <a href={`${SEPOLIA.explorer}/address/${walletInfo.address}`} target="_blank" rel="noopener noreferrer" style={{color:"#a0926a",fontSize:10,fontFamily:"'IBM Plex Mono',monospace",textDecoration:"none"}}
+                onMouseEnter={e=>e.currentTarget.style.color="#F5E882"}
+                onMouseLeave={e=>e.currentTarget.style.color="#a0926a"}
+                >View on Etherscan ↗</a>
               </div>
             )}
             <div style={{display:"flex",gap:6}}>
-              {[1000,5000,10000,25000].map(v=>(
-                <button key={v} onClick={()=>setDepositAmt(String(v))} style={{
-                  background:"#1a1608",border:"1px solid #2a2008",color:"#5a4a20",
-                  padding:"4px 9px",fontSize:10,borderRadius:6,cursor:"pointer",
-                  fontFamily:"'IBM Plex Mono',monospace",transition:"all 0.15s",
-                }}
+              {[100,500,1000,5000].map(v=>(
+                <button key={v} onClick={()=>setDepositAmt(String(v))} style={{background:"#1a1608",border:"1px solid #2a2008",color:"#5a4a20",padding:"4px 9px",fontSize:10,borderRadius:6,cursor:"pointer",fontFamily:"'IBM Plex Mono',monospace",transition:"all 0.15s"}}
                 onMouseEnter={e=>{e.currentTarget.style.borderColor="#F5E882";e.currentTarget.style.color="#F5E882";}}
                 onMouseLeave={e=>{e.currentTarget.style.borderColor="#2a2008";e.currentTarget.style.color="#5a4a20";}}
-                >${(v/1000).toFixed(0)}k</button>
+                >${v}</button>
               ))}
-              {walletInfo && <button onClick={()=>setDepositAmt(String(Math.floor(availableBalance)))} style={{
-                background:"#1e1a08",border:"1px solid #F5E882",color:"#F5E882",
-                padding:"4px 9px",fontSize:10,borderRadius:6,cursor:"pointer",
-                fontFamily:"'IBM Plex Mono',monospace",
-              }}>MAX</button>}
+              {walletInfo && availableBalance > 0 && (
+                <button onClick={()=>setDepositAmt(String(Math.floor(availableBalance*100)/100))} style={{background:"#1e1a08",border:"1px solid #F5E882",color:"#F5E882",padding:"4px 9px",fontSize:10,borderRadius:6,cursor:"pointer",fontFamily:"'IBM Plex Mono',monospace"}}>MAX</button>
+              )}
             </div>
           </div>
 
-          {/* Profile */}
           <div style={{marginBottom:22}}>
             <div style={{fontSize:10,color:"#3a2e0a",letterSpacing:2,textTransform:"uppercase",marginBottom:9,fontFamily:"'IBM Plex Mono',monospace"}}>Strategy Profile</div>
             <div style={{display:"flex",gap:8}}>
               {Object.entries(PROFILES).map(([key,p])=>(
-                <button key={key} onClick={()=>setProfile(key)} style={{
-                  background:profile===key?"#1e1a08":"#1a1608",
-                  border:"1px solid",borderColor:profile===key?"#F5E882":"#2a2008",
-                  color:profile===key?"#F5E882":"#5a4a20",
-                  padding:"9px 12px",fontSize:12,fontWeight:700,borderRadius:8,
-                  cursor:"pointer",flex:1,display:"flex",alignItems:"center",gap:5,
-                  transition:"all 0.15s",fontFamily:"'Syne',sans-serif",justifyContent:"center",
-                }}>
+                <button key={key} onClick={()=>setProfile(key)} style={{background:profile===key?"#1e1a08":"#1a1608",border:"1px solid",borderColor:profile===key?"#F5E882":"#2a2008",color:profile===key?"#F5E882":"#5a4a20",padding:"9px 12px",fontSize:12,fontWeight:700,borderRadius:8,cursor:"pointer",flex:1,display:"flex",alignItems:"center",gap:5,justifyContent:"center",transition:"all 0.15s",fontFamily:"'Syne',sans-serif"}}>
                   {p.icon} {p.name}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Payout */}
           <div style={{marginBottom:26}}>
             <div style={{fontSize:10,color:"#3a2e0a",letterSpacing:2,textTransform:"uppercase",marginBottom:9,fontFamily:"'IBM Plex Mono',monospace"}}>Yield Payout Mode</div>
             {PAYOUT_MODES.map(m=>(
-              <button key={m.id} onClick={()=>setPayout(m.id)} style={{
-                background:payout===m.id?"#1e1a08":"#1a1608",
-                border:"1px solid",borderColor:payout===m.id?"#F5E882":"#2a2008",
-                color:"#F5F5F0",padding:"11px 14px",fontSize:13,borderRadius:9,marginBottom:7,
-                cursor:"pointer",display:"flex",alignItems:"center",gap:12,textAlign:"left",
-                transition:"all 0.15s",width:"100%",
-              }}>
+              <button key={m.id} onClick={()=>setPayout(m.id)} style={{background:payout===m.id?"#1e1a08":"#1a1608",border:"1px solid",borderColor:payout===m.id?"#F5E882":"#2a2008",color:"#F5F5F0",padding:"11px 14px",fontSize:13,borderRadius:9,marginBottom:7,cursor:"pointer",display:"flex",alignItems:"center",gap:12,textAlign:"left",transition:"all 0.15s",width:"100%"}}>
                 <span style={{fontSize:18}}>{m.icon}</span>
                 <div>
                   <div style={{fontWeight:700,fontSize:13,color:payout===m.id?"#F5E882":"#F5F5F0"}}>{m.label}</div>
@@ -899,32 +1073,19 @@ export default function App() {
             ))}
           </div>
 
-          {/* CTA */}
           {!walletInfo ? (
-            <button onClick={()=>setShowModal(true)} style={{
-              width:"100%",padding:15,background:"#F5E882",color:"#0a0900",border:"none",
-              borderRadius:10,fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:14,
-              cursor:"pointer",boxShadow:"0 0 18px #F5E88222",
-            }}>Connect Wallet to Continue</button>
+            <button onClick={()=>setShowModal(true)} style={{width:"100%",padding:15,background:"#F5E882",color:"#0a0900",border:"none",borderRadius:10,fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:14,cursor:"pointer"}}>
+              Connect Wallet to Continue
+            </button>
           ) : txDone ? (
-            <div style={{background:"#1a1608",border:"1px solid #F5E882",color:"#F5E882",textAlign:"center",padding:15,borderRadius:10,fontWeight:700}}>
-              ✓ Ladder deployed successfully!
-            </div>
+            <div style={{background:"#1a1608",border:"1px solid #F5E882",color:"#F5E882",textAlign:"center",padding:15,borderRadius:10,fontWeight:700}}>✓ Ladder deployed!</div>
           ) : (
-            <button onClick={handleDeposit} disabled={txPending||!depositAmt} style={{
-              width:"100%",padding:15,border:"1px solid",
-              background:txPending||!depositAmt?"#1a1608":"#F5E882",
-              color:txPending||!depositAmt?"#3a2e0a":"#0a0900",
-              borderColor:txPending||!depositAmt?"#2a2008":"#F5E882",
-              borderRadius:10,fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:14,
-              cursor:txPending||!depositAmt?"not-allowed":"pointer",
-              boxShadow:txPending||!depositAmt?"none":"0 0 18px #F5E88222",transition:"all 0.2s",
-            }}>
-              {txPending ? <><Spinner/>Deploying…</> : `Deploy ${depositAmt?fmtUSD(parseFloat(depositAmt)||0):""} ${token} Ladder →`}
+            <button onClick={handleDeposit} disabled={txPending||!depositAmt||wrongChain} style={{width:"100%",padding:15,border:"1px solid",background:txPending||!depositAmt||wrongChain?"#1a1608":"#F5E882",color:txPending||!depositAmt||wrongChain?"#3a2e0a":"#0a0900",borderColor:txPending||!depositAmt||wrongChain?"#2a2008":"#F5E882",borderRadius:10,fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:14,cursor:txPending||!depositAmt||wrongChain?"not-allowed":"pointer",transition:"all 0.2s"}}>
+              {wrongChain ? "⚠️ Switch to Sepolia First" : txPending ? <><Spinner/>Deploying…</> : `Deploy ${depositAmt?fmtUSD(parseFloat(depositAmt)||0):""} ${token} →`}
             </button>
           )}
           <div style={{fontSize:10,color:"#2a2008",marginTop:10,textAlign:"center",fontFamily:"'IBM Plex Mono',monospace"}}>
-            ERC-4626 Vaults · Secured by Concrete · Audited
+            Sepolia Testnet · ERC-4626 Vaults · Powered by Concrete
           </div>
         </div>
 
@@ -933,7 +1094,10 @@ export default function App() {
           <div style={{background:"#100f0a",border:"1px solid #2a2008",borderRadius:16,padding:24,position:"sticky",top:80}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
               <span style={{fontSize:11,color:"#5a4a20",textTransform:"uppercase",letterSpacing:2,fontFamily:"'IBM Plex Mono',monospace"}}>Live Preview</span>
-              <span style={{fontSize:10,color:"#F5E882",background:"#1e1a08",border:"1px solid #3a2e0a",borderRadius:20,padding:"3px 10px",fontFamily:"'IBM Plex Mono',monospace",animation:"pulse 2s infinite"}}>● LIVE</span>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <span style={{fontSize:10,color:"#4ADE80",background:"#0d1a0d",border:"1px solid #166534",borderRadius:20,padding:"2px 9px",fontFamily:"'IBM Plex Mono',monospace"}}>Sepolia</span>
+                <span style={{fontSize:10,color:"#F5E882",background:"#1e1a08",border:"1px solid #3a2e0a",borderRadius:20,padding:"2px 9px",fontFamily:"'IBM Plex Mono',monospace",animation:"pulse 2s infinite"}}>● LIVE</span>
+              </div>
             </div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
               <div>
@@ -945,10 +1109,10 @@ export default function App() {
             {VAULTS.map((v,i)=><LadderBar key={v.id} vault={v} alloc={allocs[i]} animated={true}/>)}
             <div style={{borderTop:"1px solid #1a1608",paddingTop:14,display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
               {[
-                {l:"Blended APY",v:fmtPct(apy),c:"#F5E882"},
-                {l:"Monthly Est.",v:depositAmt?fmtUSD(parseFloat(depositAmt||0)*apy/100/12):"$0.00",c:"#F5F5F0"},
-                {l:"Annual Est.", v:depositAmt?fmtUSD(parseFloat(depositAmt||0)*apy/100):"$0.00",c:"#F5F5F0"},
-                {l:"First Maturity",v:"7 days",c:"#F5F5F0"},
+                {l:"Blended APY",    v:fmtPct(apy),                                                    c:"#F5E882"},
+                {l:"Monthly Est.",  v:depositAmt?fmtUSD(parseFloat(depositAmt||0)*apy/100/12):"$0.00", c:"#F5F5F0"},
+                {l:"Annual Est.",   v:depositAmt?fmtUSD(parseFloat(depositAmt||0)*apy/100):"$0.00",    c:"#F5F5F0"},
+                {l:"First Maturity",v:"7 days",                                                         c:"#F5F5F0"},
               ].map(s=>(
                 <div key={s.l}>
                   <div style={{fontSize:9,color:"#3a2e0a",textTransform:"uppercase",letterSpacing:1,fontFamily:"'IBM Plex Mono',monospace"}}>{s.l}</div>
@@ -963,39 +1127,50 @@ export default function App() {
     </div>
   );
 
-  // ── DASHBOARD ──
+  // ── DASHBOARD PAGE ───────────────────────────────────────────────────────────
   return (
     <div style={{minHeight:"100vh",background:"#09090a",color:"#F5F5F0",fontFamily:"'Syne',sans-serif"}}>
       <style>{CSS}</style>
       {showModal && <WalletModal onConnect={handleConnect} onClose={()=>setShowModal(false)}/>}
-      <Notification n={notification}/>
+      <Notification n={notif}/>
       <Navbar/>
       <div style={{maxWidth:1200,margin:"0 auto",padding:"28px 24px"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:24}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:22}}>
           <div>
-            <div style={{fontSize:10,color:"#3a2e0a",textTransform:"uppercase",letterSpacing:2,marginBottom:3,fontFamily:"'IBM Plex Mono',monospace"}}>Portfolio Dashboard</div>
+            <div style={{fontSize:10,color:"#3a2e0a",textTransform:"uppercase",letterSpacing:2,marginBottom:3,fontFamily:"'IBM Plex Mono',monospace"}}>Portfolio Dashboard · Sepolia Testnet</div>
             <h2 style={{fontFamily:"'DM Serif Display',serif",fontSize:30,color:"#F5F5F0",margin:0}}>Your Yield Ladder</h2>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            {safeMode && <div style={{background:"#1a1407",border:"1px solid #FBBF24",color:"#FBBF24",padding:"7px 14px",borderRadius:8,fontSize:12,fontWeight:700}}>🛡️ Safe Mode On</div>}
-            <button onClick={()=>{setSafeMode(s=>!s);notify(safeMode?"Safe mode off":"⚠️ Emergency safe mode activated",safeMode?"success":"warn");}} style={{
-              background:safeMode?"#1a1407":"#1a1608",border:`1px solid ${safeMode?"#FBBF24":"#2a2008"}`,
-              color:safeMode?"#FBBF24":"#5a4a20",padding:"7px 14px",fontSize:12,borderRadius:8,cursor:"pointer",
-              fontFamily:"'Syne',sans-serif",fontWeight:700,transition:"all 0.2s",
-            }}>🛡️ Safe Mode</button>
+            {safeMode && <div style={{background:"#1a1407",border:"1px solid #FBBF24",color:"#FBBF24",padding:"7px 14px",borderRadius:8,fontSize:12,fontWeight:700}}>🛡️ Safe Mode</div>}
+            <button onClick={()=>{setSafeMode(s=>!s);notify(safeMode?"Safe mode off":"⚠️ Emergency safe mode ON",safeMode?"success":"warn");}} style={{background:safeMode?"#1a1407":"#1a1608",border:`1px solid ${safeMode?"#FBBF24":"#2a2008"}`,color:safeMode?"#FBBF24":"#5a4a20",padding:"7px 14px",fontSize:12,borderRadius:8,cursor:"pointer",fontFamily:"'Syne',sans-serif",fontWeight:700,transition:"all 0.2s"}}>
+              🛡️ Safe Mode
+            </button>
+            {walletInfo && (
+              <a href={`${SEPOLIA.explorer}/address/${walletInfo.address}`} target="_blank" rel="noopener noreferrer" style={{padding:"7px 14px",background:"#1a1608",border:"1px solid #2a2008",borderRadius:8,fontSize:11,color:"#a0926a",textDecoration:"none",fontFamily:"'IBM Plex Mono',monospace",transition:"all 0.2s"}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor="#F5E882";e.currentTarget.style.color="#F5E882";}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor="#2a2008";e.currentTarget.style.color="#a0926a";}}
+              >Etherscan ↗</a>
+            )}
           </div>
         </div>
 
+        {/* Stats */}
         <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:10,marginBottom:20}}>
-          <StatCard label="Total Deposited" value={fmtUSD(deposited)} sub={`${token} · ${PROFILES[profile].name}`}/>
-          <StatCard label="Accrued Earnings" value={fmtUSD(earnings)} sub="Live" accent="#4ADE80"/>
-          <StatCard label="Blended APY" value={fmtPct(safeMode?5.2:apy)} sub={safeMode?"Safe mode":"All tranches"} accent="#F5E882"/>
-          <StatCard label="Projected Monthly" value={fmtUSD(deposited*(safeMode?5.2:apy)/100/12)} sub="At current rates"/>
-          <StatCard label="Portfolio Value" value={fmtUSD(deposited+earnings)} sub="Principal + yield" accent="#EAB308"/>
-          <StatCard label="Wallet Balance" value={fmtUSD((walletInfo?.balances[token]||0))} sub={`${token} · ${walletInfo?.balances?.networkName}`} accent="#F5E882"/>
+          <StatCard label="Total Deposited"    value={fmtUSD(deposited)}          sub={`${token} · ${PROFILES[profile].name}`}/>
+          <StatCard label="Accrued Earnings"   value={fmtUSD(earnings)}           sub="Live accrual"      accent="#4ADE80"/>
+          <StatCard label="Blended APY"        value={fmtPct(safeMode?5.2:apy)}   sub={safeMode?"Safe":"All tranches"} accent="#F5E882"/>
+          <StatCard label="Projected Monthly"  value={fmtUSD(deposited*(safeMode?5.2:apy)/100/12)} sub="At current rates"/>
+          <StatCard label="Portfolio Value"    value={fmtUSD(deposited+earnings)} sub="Principal + yield" accent="#EAB308"/>
+          <StatCard label="Wallet Balance"
+            value={fmtUSD((walletInfo?.balances[token]||0))}
+            sub={`${token} on Sepolia`}
+            accent="#F5E882"
+            href={walletInfo?`${SEPOLIA.explorer}/address/${walletInfo.address}`:null}
+          />
         </div>
 
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
+          {/* Allocation */}
           <div style={{background:"#100f0a",border:"1px solid #2a2008",borderRadius:14,padding:20}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
               <div style={{fontSize:11,fontWeight:700,color:"#F5F5F0",textTransform:"uppercase",letterSpacing:2,fontFamily:"'IBM Plex Mono',monospace"}}>Allocation</div>
@@ -1019,30 +1194,24 @@ export default function App() {
               <div style={{fontSize:11,fontWeight:700,color:"#F5F5F0",textTransform:"uppercase",letterSpacing:2,fontFamily:"'IBM Plex Mono',monospace",marginBottom:12}}>Maturity Timeline</div>
               <MaturityTimeline allocs={safeMode?[100,0,0,0]:allocs}/>
             </div>
+
             <div style={{background:"#100f0a",border:"1px solid #2a2008",borderRadius:14,padding:20}}>
               <div style={{fontSize:11,fontWeight:700,color:"#F5F5F0",textTransform:"uppercase",letterSpacing:2,fontFamily:"'IBM Plex Mono',monospace",marginBottom:10}}>Quick Withdrawal</div>
-              <div style={{fontSize:12,color:"#5a4a20",marginBottom:10}}>Withdraws from 7-day vault first. Returned to your wallet immediately.</div>
+              <div style={{fontSize:12,color:"#5a4a20",marginBottom:10}}>
+                Withdraws from 7-day vault first. Balance returned to Sepolia wallet.
+              </div>
               <div style={{display:"flex",gap:8,marginBottom:7}}>
-                <input type="number" placeholder="Amount" value={withdrawAmt} onChange={e=>setWithdrawAmt(e.target.value)} style={{
-                  flex:1,background:"#1a1608",border:"1px solid #2a2008",borderRadius:8,
-                  color:"#F5F5F0",padding:"9px 12px",fontSize:14,fontFamily:"'DM Serif Display',serif",outline:"none",
-                }}
+                <input type="number" placeholder="Amount" value={withdrawAmt} onChange={e=>setWithdrawAmt(e.target.value)} style={{flex:1,background:"#1a1608",border:"1px solid #2a2008",borderRadius:8,color:"#F5F5F0",padding:"9px 12px",fontSize:14,fontFamily:"'DM Serif Display',serif",outline:"none"}}
                 onFocus={e=>e.target.style.borderColor="#F5E882"}
                 onBlur={e=>e.target.style.borderColor="#2a2008"}
                 />
-                <button onClick={handleWithdraw} disabled={txPending} style={{
-                  background:"#1e1a08",border:"1px solid #F5E882",color:"#F5E882",
-                  padding:"9px 15px",borderRadius:8,cursor:"pointer",
-                  fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:12,
-                }}>{txPending?<Spinner/>:"Withdraw"}</button>
+                <button onClick={handleWithdraw} disabled={txPending} style={{background:"#1e1a08",border:"1px solid #F5E882",color:"#F5E882",padding:"9px 15px",borderRadius:8,cursor:"pointer",fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:12}}>
+                  {txPending?<Spinner/>:"Withdraw"}
+                </button>
               </div>
               <div style={{display:"flex",gap:6}}>
                 {[0.25,0.5,1].map(f=>(
-                  <button key={f} onClick={()=>setWithdrawAmt((deposited*f*allocs[0]/100).toFixed(2))} style={{
-                    background:"#1a1608",border:"1px solid #2a2008",color:"#5a4a20",
-                    padding:"4px 9px",fontSize:10,borderRadius:5,cursor:"pointer",
-                    fontFamily:"'IBM Plex Mono',monospace",transition:"all 0.15s",
-                  }}
+                  <button key={f} onClick={()=>setWithdrawAmt((deposited*f*allocs[0]/100).toFixed(2))} style={{background:"#1a1608",border:"1px solid #2a2008",color:"#5a4a20",padding:"4px 9px",fontSize:10,borderRadius:5,cursor:"pointer",fontFamily:"'IBM Plex Mono',monospace",transition:"all 0.15s"}}
                   onMouseEnter={e=>{e.currentTarget.style.borderColor="#F5E882";e.currentTarget.style.color="#F5E882";}}
                   onMouseLeave={e=>{e.currentTarget.style.borderColor="#2a2008";e.currentTarget.style.color="#5a4a20";}}
                   >{f*100}% 7d</button>
@@ -1052,14 +1221,21 @@ export default function App() {
           </div>
         </div>
 
+        {/* Activity */}
         <div style={{background:"#100f0a",border:"1px solid #2a2008",borderRadius:14,padding:20,marginTop:20}}>
-          <div style={{fontSize:11,fontWeight:700,color:"#F5F5F0",textTransform:"uppercase",letterSpacing:2,fontFamily:"'IBM Plex Mono',monospace",marginBottom:12}}>Auto-Rollover Activity</div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#F5F5F0",textTransform:"uppercase",letterSpacing:2,fontFamily:"'IBM Plex Mono',monospace"}}>Auto-Rollover Activity</div>
+            <a href={walletInfo?`${SEPOLIA.explorer}/address/${walletInfo.address}`:`${SEPOLIA.explorer}`} target="_blank" rel="noopener noreferrer" style={{fontSize:10,color:"#a0926a",textDecoration:"none",fontFamily:"'IBM Plex Mono',monospace",borderBottom:"1px solid #3a2e0a"}}
+            onMouseEnter={e=>e.currentTarget.style.color="#F5E882"}
+            onMouseLeave={e=>e.currentTarget.style.color="#a0926a"}
+            >View all on Etherscan ↗</a>
+          </div>
           {[
-            {t:"Just now",   e:"🔄",m:`7-day vault matured — redeployed ${fmtUSD(deposited*0.2)} at ${VAULTS[0].apy}% APY`},
-            {t:"2h ago",     e:"📊",m:"Yield accrual updated — blended APY recalculated"},
-            {t:"Yesterday",  e:"🔄",m:`30-day rollover — rate held at ${VAULTS[1].apy}% APY`},
-            {t:"3 days ago", e:"⚡",m:"Dynamic rebalance — 90d allocation +3% (rate premium)"},
-            {t:"1 week ago", e:"💰",m:`Initial deposit: ${fmtUSD(deposited)} deployed across all tranches`},
+            {t:"Just now",  e:"🔄",m:`7-day vault matured — redeployed ${fmtUSD(deposited*0.2)} at ${VAULTS[0].apy}% APY`},
+            {t:"2h ago",    e:"📊",m:"Yield accrual updated across all Concrete vaults"},
+            {t:"Yesterday", e:"🔄",m:`30-day rollover — rate held at ${VAULTS[1].apy}% APY`},
+            {t:"3d ago",    e:"⚡",m:"Dynamic rebalance — 90d tranche +3% (rate premium detected)"},
+            {t:"1wk ago",   e:"💰",m:`Initial deposit: ${fmtUSD(deposited)} ${token} deployed across all tranches`},
           ].map((a,i)=>(
             <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"9px 12px",background:"#0d0c08",borderRadius:8,border:"1px solid #1a1608",marginBottom:6}}>
               <span style={{fontSize:16}}>{a.e}</span>
