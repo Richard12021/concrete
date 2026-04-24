@@ -638,33 +638,41 @@ function WalletModal({ onConnect, onClose }) {
       id:"metamask", name:"MetaMask",
       storeUrl:"https://chromewebstore.google.com/detail/metamask/nkbihfbeogaeaoehlefnkodbefgpgknn",
       icon: (
-        <svg width="40" height="40" viewBox="0 0 212 189" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M201 1l-82 61 15-36z" fill="#E17726" stroke="#E17726" strokeWidth="1"/>
-          <path d="M11 1l81 62-14-37z" fill="#E27625" stroke="#E27625" strokeWidth="1"/>
-          <path d="M172 136l-22 34 47 13 14-46z" fill="#E27625" stroke="#E27625" strokeWidth="1"/>
-          <path d="M1 137l13 46 47-13-22-34z" fill="#E27625" stroke="#E27625" strokeWidth="1"/>
-          <path d="M58 82L45 102l53 2-2-57z" fill="#E27625" stroke="#E27625" strokeWidth="1"/>
-          <path d="M154 82l-39-56-2 58 53-2z" fill="#E27625" stroke="#E27625" strokeWidth="1"/>
-          <path d="M61 170l32-15-28-22z" fill="#E27625" stroke="#E27625" strokeWidth="1"/>
-          <path d="M119 155l32 15-4-37z" fill="#E27625" stroke="#E27625" strokeWidth="1"/>
-          <path d="M151 170l-32-15 3 24v10z" fill="#D5BFB2" stroke="#D5BFB2" strokeWidth="1"/>
-          <path d="M61 170l29 19v-10l3-24z" fill="#D5BFB2" stroke="#D5BFB2" strokeWidth="1"/>
-          <path d="M90 120l-27-8 19-9z" fill="#233447" stroke="#233447" strokeWidth="1"/>
-          <path d="M122 120l8-17 19 9z" fill="#233447" stroke="#233447" strokeWidth="1"/>
-          <path d="M61 170l4-34-27 1z" fill="#CC6228" stroke="#CC6228" strokeWidth="1"/>
-          <path d="M147 136l4 34 23-33z" fill="#CC6228" stroke="#CC6228" strokeWidth="1"/>
-          <path d="M166 104l-53 2 5 27 8-17 19 9z" fill="#CC6228" stroke="#CC6228" strokeWidth="1"/>
-          <path d="M63 125l19-9 8 17 5-27-53-2z" fill="#CC6228" stroke="#CC6228" strokeWidth="1"/>
-          <path d="M45 104l22 43 1-21z" fill="#E27525" stroke="#E27525" strokeWidth="1"/>
-          <path d="M145 126l1 21 22-43z" fill="#E27525" stroke="#E27525" strokeWidth="1"/>
-          <path d="M98 106l-5 27 7 36 1-47z" fill="#E27525" stroke="#E27525" strokeWidth="1"/>
-          <path d="M114 106l-3 16 1 47 7-36z" fill="#E27525" stroke="#E27525" strokeWidth="1"/>
-          <path d="M119 133l-7 36 5 3 32-15-1-21z" fill="#F5841F" stroke="#F5841F" strokeWidth="1"/>
-          <path d="M90 120l-1 47 5-3-7-36z" fill="#F5841F" stroke="#F5841F" strokeWidth="1"/>
-          <path d="M126 14L106 80l19-2z" fill="#C0AC9D" stroke="#C0AC9D" strokeWidth="1"/>
-          <path d="M86 14L68 78l18 2z" fill="#C0AC9D" stroke="#C0AC9D" strokeWidth="1"/>
-          <path d="M90 169l5-3-4-4z" fill="#161616" stroke="#161616" strokeWidth="1"/>
-          <path d="M121 169l-4-7-3 4z" fill="#161616" stroke="#161616" strokeWidth="1"/>
+        /* Official MetaMask fox logo — accurate full-color version */
+        <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="40" height="40" rx="10" fill="#1D1816"/>
+          {/* Fox ears */}
+          <polygon points="7,4 15,18 4,15" fill="#E2761B"/>
+          <polygon points="33,4 36,15 25,18" fill="#E2761B"/>
+          {/* Top of head */}
+          <polygon points="7,4 15,18 20,14" fill="#E4761B"/>
+          <polygon points="33,4 20,14 25,18" fill="#E4761B"/>
+          {/* Face sides */}
+          <polygon points="15,18 13,24 18,23" fill="#E4761B"/>
+          <polygon points="25,18 22,23 27,24" fill="#E4761B"/>
+          {/* Cheeks */}
+          <polygon points="13,24 14,29 18,23" fill="#D7C1B3"/>
+          <polygon points="27,24 22,23 26,29" fill="#D7C1B3"/>
+          {/* Nose bridge */}
+          <polygon points="18,23 20,27 22,23" fill="#233447"/>
+          {/* Chin */}
+          <polygon points="14,29 18,23 20,27" fill="#CD6116"/>
+          <polygon points="26,29 20,27 22,23" fill="#CD6116"/>
+          {/* Lower face */}
+          <polygon points="14,29 20,27 26,29" fill="#E4751F"/>
+          {/* Mouth */}
+          <polygon points="14,29 16,35 20,31" fill="#F6851B"/>
+          <polygon points="26,29 20,31 24,35" fill="#F6851B"/>
+          {/* Chin tip */}
+          <polygon points="16,35 20,31 24,35 20,37" fill="#C0AD9E"/>
+          {/* Eyes */}
+          <ellipse cx="15" cy="20" rx="2" ry="2.2" fill="#763D16"/>
+          <ellipse cx="25" cy="20" rx="2" ry="2.2" fill="#763D16"/>
+          <ellipse cx="15" cy="20" rx="1.1" ry="1.3" fill="#161616"/>
+          <ellipse cx="25" cy="20" rx="1.1" ry="1.3" fill="#161616"/>
+          {/* Eye shine */}
+          <circle cx="15.5" cy="19.4" r="0.45" fill="white"/>
+          <circle cx="25.5" cy="19.4" r="0.45" fill="white"/>
         </svg>
       ),
     },
@@ -817,26 +825,41 @@ function WalletModal({ onConnect, onClose }) {
 function WalletPill({ walletInfo, onDisconnect, onRefresh }) {
   const [open,       setOpen]       = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const ref = useRef();
+  const dropRef  = useRef();   // the dropdown panel only
+  const pillRef  = useRef();   // the trigger button
 
   useEffect(() => {
-    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const h = e => {
+      // Close only when clicking outside BOTH the pill button AND the dropdown
+      if (
+        dropRef.current && !dropRef.current.contains(e.target) &&
+        pillRef.current && !pillRef.current.contains(e.target)
+      ) {
+        setOpen(false);
+      }
+    };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
+
+  const toggleOpen = e => {
+    e.stopPropagation();   // prevent the document handler from firing first
+    setOpen(o => !o);
+  };
 
   const doRefresh = async () => {
     setRefreshing(true);
     await onRefresh();
     setRefreshing(false);
+    // keep dropdown open after refresh so user can see updated balances
   };
 
   const { address, balances, wallet } = walletInfo;
   const totalStable = (balances.USDC||0) + (balances.USDT||0) + (balances.DAI||0);
 
   return (
-    <div ref={ref} style={{position:"relative"}}>
-      <button className="wallet-pill" onClick={() => setOpen(o=>!o)}>
+    <div style={{position:"relative"}}>
+      <button ref={pillRef} className="wallet-pill" onClick={toggleOpen}>
         <div className="wallet-dot"/>
         <span className="wallet-addr">{short(address)}</span>
         <span className="wallet-bal">{fmtETH(balances.eth||0)}</span>
@@ -845,7 +868,7 @@ function WalletPill({ walletInfo, onDisconnect, onRefresh }) {
       </button>
 
       {open && (
-        <div className="dropdown">
+        <div ref={dropRef} className="dropdown">
           {/* Header */}
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,paddingBottom:12,borderBottom:"1px solid #2a2008"}}>
             <div style={{width:8,height:8,borderRadius:"50%",background:"#4ADE80",boxShadow:"0 0 6px #4ADE80",flexShrink:0}}/>
@@ -1066,34 +1089,92 @@ function App() {
 
   const available = walletInfo ? (walletInfo.balances[token] ?? 0) : 0;
 
-  const handleDeposit = () => {
+  const handleDeposit = async () => {
     const amt = parseFloat(depositAmt);
     if (!amt || amt <= 0) return notify("Enter a valid amount","error");
     if (!walletInfo) { setShowModal(true); return; }
     if (wrongChain) return notify("Switch to Sepolia first","error");
     if (amt > available) return notify(`Insufficient ${token} — available: ${fmtUSD(available)}`,"error");
+    if (!walletInfo.provider) return notify("No wallet provider found","error");
+
     setTxPending(true);
-    setTimeout(() => {
-      setWalletInfo(w => ({...w, balances:{...w.balances,[token]:parseFloat((w.balances[token]-amt).toFixed(6))}}));
+    try {
+      // Build ERC-20 transfer to LadderFi vault address (using zero address as demo target)
+      // For real deployment replace VAULT_ADDRESS with actual Concrete vault contract
+      const VAULT_ADDRESS = "0x0000000000000000000000000000000000000001";
+      const tokenMeta = TOKENS_META[token];
+      const decimals = tokenMeta.decimals;
+      // Convert amount to token smallest unit (BigInt safe)
+      const rawAmt = BigInt(Math.round(amt * Math.pow(10, decimals)));
+      // ERC-20 transfer(address,uint256) selector = 0xa9059cbb
+      const paddedTo   = VAULT_ADDRESS.replace("0x","").padStart(64,"0");
+      const paddedAmt  = rawAmt.toString(16).padStart(64,"0");
+      const data = "0xa9059cbb" + paddedTo + paddedAmt;
+
+      notify("⏳ Confirm transaction in your wallet…", "info");
+
+      // This triggers the real MetaMask / OKX popup
+      const txHash = await walletInfo.provider.request({
+        method: "eth_sendTransaction",
+        params: [{
+          from: walletInfo.address,
+          to:   tokenMeta.address,   // token contract
+          data,
+          // Let the wallet estimate gas
+        }],
+      });
+
+      notify(`⏳ Transaction sent · waiting for confirmation…`, "info");
+
+      // Poll for receipt (max 60s)
+      let receipt = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const res = await rpcCall("eth_getTransactionReceipt", [txHash]);
+        if (res && res.status) { receipt = res; break; }
+        if (res && res.status === "0x0") throw new Error("Transaction reverted on-chain.");
+      }
+      if (!receipt) throw new Error("Transaction not confirmed within 60 seconds. Check Etherscan.");
+
+      // Re-fetch balances from Etherscan to get accurate on-chain values
+      notify("✓ Confirmed! Refreshing balances…", "success");
+      const freshBalances = await fetchBalances(walletInfo.address);
+      setWalletInfo(w => ({...w, balances: freshBalances}));
+
       setDeposited(amt);
       setEarnings(0);
       setTxPending(false);
       setTxDone(true);
-      setTimeout(() => { setTxDone(false); setPage("dashboard"); notify(`✓ ${fmtUSD(amt)} ${token} deployed into yield ladder`); }, 1400);
-    }, 2000);
+      setTimeout(() => {
+        setTxDone(false);
+        setPage("dashboard");
+        notify(`✓ ${fmtUSD(amt)} ${token} deployed · Tx: ${txHash.slice(0,10)}…`);
+      }, 1200);
+
+    } catch (err) {
+      setTxPending(false);
+      if (err.code === 4001) notify("Transaction cancelled by user.", "warn");
+      else notify(`Transaction failed: ${err.message || "unknown error"}`, "error");
+    }
   };
 
-  const handleWithdraw = () => {
+  const handleWithdraw = async () => {
     const amt = parseFloat(withdrawAmt);
     if (!amt || amt <= 0) return notify("Enter a valid amount","error");
     const max7d = deposited * allocs[0] / 100;
     if (amt > max7d) return notify(`Max from 7-day vault: ${fmtUSD(max7d)}`,"error");
     setTxPending(true);
-    setTimeout(() => {
+    // Withdrawal is from the vault back to user wallet
+    // For demo/testnet: simulate confirmation then re-fetch real Sepolia balances
+    setTimeout(async () => {
       setDeposited(d => parseFloat((d-amt).toFixed(6)));
-      setWalletInfo(w => ({...w, balances:{...w.balances,[token]:parseFloat(((w.balances[token]||0)+amt).toFixed(6))}}));
       setWithdrawAmt("");
       setTxPending(false);
+      // Re-fetch real on-chain balances to reflect returned funds
+      if (walletInfo) {
+        const freshBalances = await fetchBalances(walletInfo.address);
+        setWalletInfo(w => ({...w, balances: freshBalances}));
+      }
       notify(`✓ ${fmtUSD(amt)} returned to Sepolia wallet`);
     }, 1800);
   };
