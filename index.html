@@ -825,41 +825,35 @@ function WalletModal({ onConnect, onClose }) {
 function WalletPill({ walletInfo, onDisconnect, onRefresh }) {
   const [open,       setOpen]       = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const dropRef  = useRef();   // the dropdown panel only
-  const pillRef  = useRef();   // the trigger button
+  // wrapRef covers the ENTIRE component (pill + dropdown) — always in the DOM
+  const wrapRef = useRef();
 
   useEffect(() => {
     const h = e => {
-      // Close only when clicking outside BOTH the pill button AND the dropdown
-      if (
-        dropRef.current && !dropRef.current.contains(e.target) &&
-        pillRef.current && !pillRef.current.contains(e.target)
-      ) {
+      // Only close if the click is genuinely outside the whole wrapper
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
         setOpen(false);
       }
     };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
+    // Use 'mousedown' on capture phase so it runs before any child onClick
+    document.addEventListener("mousedown", h, true);
+    return () => document.removeEventListener("mousedown", h, true);
   }, []);
 
-  const toggleOpen = e => {
-    e.stopPropagation();   // prevent the document handler from firing first
-    setOpen(o => !o);
-  };
+  const toggleOpen = () => setOpen(o => !o);
 
   const doRefresh = async () => {
     setRefreshing(true);
     await onRefresh();
     setRefreshing(false);
-    // keep dropdown open after refresh so user can see updated balances
   };
 
   const { address, balances, wallet } = walletInfo;
   const totalStable = (balances.USDC||0) + (balances.USDT||0) + (balances.DAI||0);
 
   return (
-    <div style={{position:"relative"}}>
-      <button ref={pillRef} className="wallet-pill" onClick={toggleOpen}>
+    <div ref={wrapRef} style={{position:"relative"}}>
+      <button className="wallet-pill" onClick={toggleOpen}>
         <div className="wallet-dot"/>
         <span className="wallet-addr">{short(address)}</span>
         <span className="wallet-bal">{fmtETH(balances.eth||0)}</span>
@@ -868,7 +862,7 @@ function WalletPill({ walletInfo, onDisconnect, onRefresh }) {
       </button>
 
       {open && (
-        <div ref={dropRef} className="dropdown">
+        <div className="dropdown">
           {/* Header */}
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,paddingBottom:12,borderBottom:"1px solid #2a2008"}}>
             <div style={{width:8,height:8,borderRadius:"50%",background:"#4ADE80",boxShadow:"0 0 6px #4ADE80",flexShrink:0}}/>
