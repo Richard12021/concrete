@@ -1170,6 +1170,7 @@ function App() {
       setTxDone(true);
       setTimeout(() => {
         setTxDone(false);
+        setDepositAmt("");   // clear input only after we've left the page
         setPage("dashboard");
         notify(`✓ ${fmtUSD(amt)} ${token} deployed · Tx: ${txHash.slice(0,10)}…`);
       }, 1200);
@@ -1439,24 +1440,36 @@ function App() {
               <div>
                 <div style={{fontSize:11,color:"#5a4a20"}}>Deposit Amount</div>
                 <div style={{fontFamily:"'DM Serif Display',serif",fontSize:26,fontWeight:800,color:"#F5F5F0"}}>
-                  {depositAmt ? fmtUSD(parseFloat(depositAmt)||0) : "$0.00"}
+                  {(() => {
+                    // Show what user is currently typing; if empty fall back to previously deposited amount
+                    const live = parseFloat(depositAmt);
+                    if (depositAmt !== "" && !isNaN(live) && live > 0) return fmtUSD(live);
+                    if (deposited > 0) return fmtUSD(deposited);
+                    return "$0.00";
+                  })()}
                 </div>
               </div>
               <DonutChart allocs={allocs}/>
             </div>
             {VAULTS.map((v,i) => <LadderBar key={v.id} vault={v} alloc={allocs[i]} animated={true}/>)}
             <div style={{borderTop:"1px solid #1a1608",paddingTop:14,display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-              {[
-                {l:"Blended APY",   v:fmtPct(apy),                                                     c:"#F5E882"},
-                {l:"Monthly Est.", v:depositAmt?fmtUSD(parseFloat(depositAmt||0)*apy/100/12):"$0.00",  c:"#F5F5F0"},
-                {l:"Annual Est.",  v:depositAmt?fmtUSD(parseFloat(depositAmt||0)*apy/100):"$0.00",     c:"#F5F5F0"},
-                {l:"First Maturity",v:"7 days",                                                         c:"#F5F5F0"},
-              ].map(s => (
-                <div key={s.l}>
-                  <div style={{fontSize:9,color:"#3a2e0a",textTransform:"uppercase",letterSpacing:1,fontFamily:"'IBM Plex Mono',monospace"}}>{s.l}</div>
-                  <div style={{fontSize:18,fontWeight:800,color:s.c,fontFamily:"'DM Serif Display',serif"}}>{s.v}</div>
-                </div>
-              ))}
+              {(() => {
+                // Use live typed amount if present, else fall back to confirmed deposited
+                const previewAmt = (depositAmt !== "" && !isNaN(parseFloat(depositAmt)) && parseFloat(depositAmt) > 0)
+                  ? parseFloat(depositAmt)
+                  : deposited;
+                return [
+                  {l:"Blended APY",    v:fmtPct(apy),                                      c:"#F5E882"},
+                  {l:"Monthly Est.",   v:previewAmt > 0 ? fmtUSD(previewAmt*apy/100/12) : "$0.00", c:"#F5F5F0"},
+                  {l:"Annual Est.",    v:previewAmt > 0 ? fmtUSD(previewAmt*apy/100)    : "$0.00", c:"#F5F5F0"},
+                  {l:"First Maturity", v:"7 days",                                          c:"#F5F5F0"},
+                ].map(s => (
+                  <div key={s.l}>
+                    <div style={{fontSize:9,color:"#3a2e0a",textTransform:"uppercase",letterSpacing:1,fontFamily:"'IBM Plex Mono',monospace"}}>{s.l}</div>
+                    <div style={{fontSize:18,fontWeight:800,color:s.c,fontFamily:"'DM Serif Display',serif"}}>{s.v}</div>
+                  </div>
+                ));
+              })()}
             </div>
             <MaturityTimeline allocs={allocs}/>
           </div>
